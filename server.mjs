@@ -707,7 +707,11 @@ function verifyHealthToken(token) {
 // Config build + LCG-XOR obfuscation (identical scheme to the original)
 // ---------------------------------------------------------------------------
 function buildConfig(t, req) {
-  const sources = t.sources.map((s) => ({
+  // Azure-only: a source without a published copy is not offered at all, so the
+  // player has no way to fall back to this PC's uplink. The title stays in the
+  // catalogue and says it is still being moved, rather than vanishing.
+  const offered = AZURE_ONLY ? t.sources.filter((s) => s.remote && s.remote.url) : t.sources;
+  const sources = offered.map((s) => ({
     id: s.id,
     health_key: healthKey(s),
     file_fid: s.slug.replace("-", "_"),
@@ -758,6 +762,9 @@ function buildConfig(t, req) {
     requested_file: "",
     poster_kind: "portrait",
     post_shot: posterUrl(t),
+    // True only in Azure-only mode, and only while this film is still local:
+    // the player says so instead of reporting a broken source.
+    pending_publish: Boolean(AZURE_ONLY && offered.length === 0 && t.sources.length > 0),
   };
 }
 
@@ -1119,6 +1126,10 @@ const AZURE_SAS = String(process.env.AZURE_SAS || "").trim();
 const AZURE_SAS_INFO = parseSas(AZURE_SAS);
 const AZURE_ON = Boolean(AZURE_CONTAINER && AZURE_SAS_INFO);
 const AZURE_PREFIX = String(process.env.AZURE_PREFIX || "v1").trim() || "v1";
+// Azure-only: never hand the browser a /p/ URL. The films are on Blob storage or
+// they are not playable yet; nothing streams from this PC. Off by default,
+// because a library that has not been published would have nothing to play.
+const AZURE_ONLY = /^(1|true|yes|on)$/i.test(String(process.env.AZURE_ONLY || "").trim());
 
 const conversions = new Map();   // id -> job, newest last
 let runningConversion = null;    // the job holding ffmpeg right now
@@ -1530,12 +1541,36 @@ const uploadView = (job) => ({
   percent: Math.round(Number(job.percent) || 0),
   bytes: job.sent,
   total: job.total,
+  count: job.files.length,
+  index: job.index,
+  files: job.files.map((f) => ({
+    name: f.name,
+    bytes: f.bytes,
+    sent: f.sent,
+    percent: Math.round(Number(f.percent) || 0),
+    status: f.status,
+    error: f.error || null,
+    remote: f.remote || null,
+  })),
   error: job.error || null,
   remote: job.remote || null,
   titles: job.titles || 0,
   started: job.started,
   finished: job.finished || null,
 });
+
+/** The bar covers the whole request: a film is its master *and* its renditions. */
+function recountUpload(job) {
+  let sent = 0;
+  let total = 0;
+  for (const f of job.files) {
+    sent += Math.min(Number(f.sent) || 0, Number(f.bytes) || 0);
+    total += Number(f.bytes) || 0;
+  }
+  job.sent = sent;
+  job.total = total;
+  job.percent = total > 0 ? (sent / total) * 100 : 0;
+}
 
 function rememberUpload(job) {
   uploads.set(job.id, job);
@@ -1590,36 +1625,52 @@ async function detachRemote(file) {
   throw new Error("library.json kept changing; nothing was changed");
 }
 
-async function runUploadJob(job, input) {
+async function runUploadJob(job) {
   try {
-    const blob = blobNameFor(job.file, AZURE_PREFIX);
-    console.log(`[azure] sending ${job.file} (${humanSize(job.total)})`);
-    const result = await putBlob({
-      container: AZURE_CONTAINER,
-      sas: AZURE_SAS,
-      name: blob,
-      file: input,
-      contentType: MIME[extname(job.file).toLowerCase()] || "video/mp4",
-      signal: job.signal,
-      onProgress: (p) => {
-        job.sent = p.sent;
-        job.total = p.total;
-        job.percent = p.percent;
-      },
-    });
-    job.percent = 100;
-    // Trust, but check: a 201 with the wrong length would be a silent truncation
-    // for every viewer, and a HEAD costs one request.
-    const check = await headBlob({ url: result.url });
-    if (check.ok && check.bytes && check.bytes !== result.bytes) {
-      throw new Error(`Azure reports ${check.bytes} bytes but the file is ${result.bytes}`);
+    for (const [i, item] of job.files.entries()) {
+      job.index = i;
+      job.file = item.name;
+      item.status = "running";
+      const blob = blobNameFor(item.name, AZURE_PREFIX);
+      console.log(`[azure] sending ${item.name} (${humanSize(item.bytes)})`);
+      const result = await putBlob({
+        container: AZURE_CONTAINER,
+        sas: AZURE_SAS,
+        name: blob,
+        file: join(STORAGE, item.name),
+        contentType: MIME[extname(item.name).toLowerCase()] || "video/mp4",
+        signal: job.signal,
+        onProgress: (p) => {
+          item.sent = p.sent;
+          item.bytes = p.total || item.bytes;
+          item.percent = p.percent;
+          recountUpload(job);
+        },
+      });
+      item.sent = result.bytes;
+      item.percent = 100;
+      recountUpload(job);
+      // Trust, but check: a 201 with the wrong length would be a silent
+      // truncation for every viewer, and a HEAD costs one request.
+      const check = await headBlob({ url: result.url });
+      if (check.ok && check.bytes && check.bytes !== result.bytes) {
+        throw new Error(`Azure reports ${check.bytes} bytes but ${item.name} is ${result.bytes}`);
+      }
+      const remote = { url: result.url, blob, bytes: result.bytes, at: new Date().toISOString() };
+      item.remote = remote;
+      job.remote = remote;
+      item.status = "done";
+      job.titles += await attachRemote(item.name, remote);
+      console.log(`[azure] published ${item.name} (${humanSize(result.bytes)}) -> ${result.url}`);
     }
-    const remote = { url: result.url, blob, bytes: result.bytes, at: new Date().toISOString() };
-    job.remote = remote;
-    job.titles = await attachRemote(job.file, remote);
+    job.percent = 100;
     job.status = "done";
-    console.log(`[azure] published ${job.file} (${humanSize(result.bytes)}) -> ${result.url}`);
   } catch (e) {
+    const current = job.files[job.index];
+    if (current && current.status === "running") {
+      current.status = e.message === "cancelled" ? "cancelled" : "failed";
+      current.error = e.message;
+    }
     job.status = e.message === "cancelled" ? "cancelled" : "failed";
     job.error = e.message;
     console.warn(`[azure] ${job.file}: ${e.message}`);
@@ -1643,11 +1694,42 @@ async function startUpload(res, url) {
     });
   }
   const file = String(url.searchParams.get("file") || "");
-  if (!isBareName(file) || !(await exists(join(STORAGE, file)))) {
-    return sendJson(res, 400, { ok: false, error: "unknown_file", message: "That file is not in the media folder." });
+  const titleId = String(url.searchParams.get("title") || "");
+
+  // ?file= sends one file; ?title= sends the film — master, rendition and any
+  // other copy the title lists — in one job, because the point of publishing is
+  // that none of it is left on this PC.
+  let names;
+  if (titleId) {
+    const t = await titleById(titleId);
+    if (!t) return sendJson(res, 404, { ok: false, error: "unknown_title", message: `No title with id "${titleId}".` });
+    names = [...new Set(t.sources.map((s) => String((s && s.file) || "")))].filter((n) => isBareName(n));
+    if (!names.length) {
+      return sendJson(res, 400, { ok: false, error: "no_files", message: "That title lists no source files." });
+    }
+  } else {
+    if (!isBareName(file) || !(await exists(join(STORAGE, file)))) {
+      return sendJson(res, 400, { ok: false, error: "unknown_file", message: "That file is not in the media folder." });
+    }
+    names = [file];
   }
-  const input = join(STORAGE, file);
-  const size = (await stat(input)).size;
+
+  const items = [];
+  const absent = [];
+  for (const name of names) {
+    const abs = join(STORAGE, name);
+    if (!(await exists(abs))) { absent.push(name); continue; }
+    items.push({
+      name, bytes: (await stat(abs)).size, sent: 0, percent: 0,
+      status: "waiting", error: null, remote: null,
+    });
+  }
+  if (!items.length) {
+    return sendJson(res, 409, {
+      ok: false, error: "missing_files",
+      message: `Not in the media folder: ${absent.join(", ")}`,
+    });
+  }
 
   if (runningUpload) {
     return sendJson(res, 409, {
@@ -1658,18 +1740,23 @@ async function startUpload(res, url) {
 
   const job = {
     id: randomBytes(6).toString("hex"),
-    file, status: "running", percent: 0, sent: 0, total: size,
+    file: items[0].name, files: items, index: 0,
+    status: "running", percent: 0, sent: 0, total: 0,
     started: Date.now(), finished: null, error: null, remote: null, titles: 0,
     signal: null,
   };
+  recountUpload(job);
   const controller = new AbortController();
   job.signal = controller.signal;
   job.cancel = () => controller.abort();
   rememberUpload(job);
   runningUpload = job;
 
-  sendJson(res, 202, { ok: true, job: uploadView(job), container: AZURE_CONTAINER });
-  runUploadJob(job, input).catch((e) => {
+  sendJson(res, 202, {
+    ok: true, job: uploadView(job), container: AZURE_CONTAINER,
+    skipped: absent,
+  });
+  runUploadJob(job).catch((e) => {
     job.status = "failed";
     job.error = e.message;
   });
@@ -1713,8 +1800,69 @@ async function cancelUpload(res, url) {
   return sendJson(res, 200, { ok: true, job: uploadView(job) });
 }
 
-const adminTokenOk = (req) => ADMIN_ON && safeEqual(String(req.headers["x-admin-token"] || ""), ADMIN_TOKEN);
+/**
+ * Adopt a blob that is already in the container.
+ *
+ * Writing needs the container SAS, but a film uploaded through the Azure portal
+ * (or from another machine, or with a token that has since expired) is already
+ * there and public-read. Pointing a title at it needs no key at all: one HEAD
+ * says whether it is really there and how big it is.
+ */
+async function adoptRemote(res, url) {
+  if (!AZURE_CONTAINER) {
+    return sendJson(res, 503, {
+      ok: false, error: "azure_off",
+      message: "Set AZURE_CONTAINER_URL, then restart, before adopting a blob.",
+    });
+  }
+  const file = String(url.searchParams.get("file") || "");
+  if (!isBareName(file) || !(await exists(join(STORAGE, file)))) {
+    return sendJson(res, 400, { ok: false, error: "unknown_file", message: "That file is not in the media folder." });
+  }
 
+  let blob = String(url.searchParams.get("blob") || "").trim();
+  if (!blob) {
+    return sendJson(res, 400, {
+      ok: false, error: "bad_blob",
+      message: "Give the blob path inside the container, for example v1/abc123/Film.mp4.",
+    });
+  }
+  // A pasted URL is reduced to its path, which also drops any signature in it.
+  if (/^https?:\/\//i.test(blob)) {
+    try {
+      const u = new URL(blob);
+      const root = new URL(AZURE_CONTAINER);
+      if (u.origin === root.origin && u.pathname.startsWith(`${root.pathname}/`)) {
+        blob = decodeURIComponent(u.pathname.slice(root.pathname.length + 1));
+      }
+    } catch { /* not a URL after all; use it as a path */ }
+  }
+  blob = blob.replace(/^\/+/, "");
+  if (!blob || blob.includes("..") || !/^[A-Za-z0-9._/-]+$/.test(blob)) {
+    return sendJson(res, 400, {
+      ok: false, error: "bad_blob",
+      message: "That is not a path inside this container.",
+    });
+  }
+
+  const target = `${AZURE_CONTAINER}/${blob.split("/").map(encodeURIComponent).join("/")}`;
+  const head = await headBlob({ url: target });
+  if (!head.ok) {
+    return sendJson(res, 404, {
+      ok: false, error: "blob_missing", blob,
+      message: `No blob at "${blob}" in that container (${head.status || head.reason || "not found"}).`,
+    });
+  }
+
+  const remote = { url: target, blob, bytes: head.bytes || 0, at: new Date().toISOString() };
+  const titles = await attachRemote(file, remote).catch((e) => e.message);
+  if (typeof titles === "string") {
+    return sendJson(res, 409, { ok: false, error: "conflict", message: titles });
+  }
+  return sendJson(res, 200, { ok: true, file, remote, titles });
+}
+
+const adminTokenOk = (req) => ADMIN_ON && safeEqual(String(req.headers["x-admin-token"] || ""), ADMIN_TOKEN);
 /** 404 when admin is off (do not advertise it), 401 when the token is wrong. */
 const adminDenied = (res) =>
   ADMIN_ON
@@ -1802,7 +1950,9 @@ function withRenditions(sources, availableFiles) {
     if (!availableFiles.has(name) || seen.has(name)) continue;
     seen.add(name);
     // Same mirror and sound as the copy it came from: it is the same film.
-    out.push({ ...s, file: name, quality: RENDITION_HEIGHT, best: false, rendition: true });
+    // But not the same *file*: publishing the master says nothing about the
+    // rendition, so it must not inherit the master's blob URL.
+    out.push({ ...s, file: name, quality: RENDITION_HEIGHT, best: false, rendition: true, remote: null });
   }
   return out;
 }
@@ -1930,6 +2080,9 @@ async function adminState() {
     poster: posterUrl(t),
     source_count: t.sources.length,
     qualities: [...new Set(t.sources.map((s) => s.quality))].sort((a, b) => b - a),
+    // How much of this film still lives here. One number is enough for the admin
+    // to say "not on Azure yet" without listing every file twice.
+    local_files: t.sources.filter((s) => !(s.remote && s.remote.url)).length,
     ...extra,
   });
 
@@ -1953,6 +2106,8 @@ async function adminState() {
       scope: AZURE_SAS_INFO ? AZURE_SAS_INFO.scope : null,
       expires: AZURE_SAS_INFO ? AZURE_SAS_INFO.expires : null,
       prefix: AZURE_PREFIX,
+      // Streaming is restricted to published copies: nothing here is served.
+      only: AZURE_ONLY,
       uploading: runningUpload ? uploadView(runningUpload) : null,
     },
     cdns: CDNS.map((c) => ({ label: c.label, provider: c.provider, priority: c.priority, broken: Boolean(c.broken) })),
@@ -2080,6 +2235,7 @@ async function adminDispatch(req, res, url) {
   if (p === "/api/admin/azure") {
     if (req.method === "POST") return startUpload(res, url);
     if (req.method === "GET") return uploadStatus(res, url);
+    if (req.method === "PATCH") return adoptRemote(res, url);
     if (req.method === "DELETE") return cancelUpload(res, url);
   }
 

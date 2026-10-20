@@ -287,6 +287,7 @@ Then, on this PC, edit `H:\movielinkbd-storage\.azure.env`:
 ```
 AZURE_CONTAINER_URL=https://<account>.blob.core.windows.net/<container>
 AZURE_SAS=?sv=...&sr=c&sp=racw&sig=...
+# AZURE_ONLY=1      # later: never stream a film from this PC
 ```
 
 The file is read by `run-site.cmd` → `go-live.ps1` at start-up, so restart with
@@ -297,17 +298,57 @@ never reaches a browser.
 
 ### Publishing a film
 
-Admin (`http://127.0.0.1:8890/admin`) → **Media files** → **Send to Azure**.
+Admin (`http://127.0.0.1:8890/admin`) → the film's row → **Send film to Azure**.
+That sends **every file the title lists** — the master and its 480p rendition — in
+one job, because publishing half a film leaves the quality switch pointing back
+at this PC. A single file can still be sent on its own from **Media files**.
+
 Progress is shown in the panel; the upload can be cancelled, and it retries once
 if the connection drops. A 2.7 GiB film on a domestic uplink takes as long as
-your upload takes — start it and leave it. When it lands, the row shows **AZURE**
-and every movie that uses the file starts streaming from Azure on the next page
-load. No restart, no re-save of the title.
+your upload takes — start it and leave it. When it lands, the film's row shows
+**on Azure** and every movie that uses the file starts streaming from Azure on
+the next page load. No restart, no re-save of the title.
 
 The blob goes to `v1/<12 random hex>/<name>`. The container is public-read, so
 the URL is the handle: the random folder is what keeps a published film from
 being trivially discoverable, and publishing the same file twice does not
 overwrite a copy someone may be watching.
+
+### Streaming only from Blob storage
+
+Until every file is published, an unpublished film still plays from this PC. To
+make that impossible, add one line to `.azure.env` and restart:
+
+```
+AZURE_ONLY=1
+```
+
+In that mode the player config **never contains a local media URL**. A film whose
+files are all published plays from Azure; one that is not published yet shows
+"this film is being moved to Blob storage" instead of quietly using the uplink.
+The admin marks each row **on Azure** or with the number of files still local, so
+the two states are visible before a viewer finds them.
+
+Turn it on when the reports say what you expect: every title at `0` local files.
+Turning it on early is safe — nothing breaks — but those films will not play
+until they are published.
+
+### A blob that is already in the container
+
+Writing needs the key, but *adopting* an existing blob does not: the container is
+public-read, so one `HEAD` is enough to confirm the file is there. That covers a
+film uploaded through the Azure portal (or from another machine, or with a token
+that has since expired). Give the server the local file and the blob's path:
+
+```powershell
+$t = (Get-Content 'H:\movielinkbd-storage\.admin-token' -Raw).Trim()
+Invoke-RestMethod -Method Patch `
+  -Uri "http://127.0.0.1:8890/api/admin/azure?file=This_Means_War.mp4&blob=v1/abc123/This_Means_War.mp4" `
+  -Headers @{ "X-Admin-Token" = $t }
+```
+
+The response names the blob it found, its size, and how many source rows now
+point at it. A wrong path answers `404 blob_missing` and changes nothing.
 
 ### When the token expires
 

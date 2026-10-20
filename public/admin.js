@@ -100,17 +100,28 @@ function renderAll() {
 
 function renderTitles() {
   const host = $("titles");
+  const azure = state.azure || {};
+  const canPublish = azure.configured && azure.scope === "container";
   host.innerHTML = state.titles.map((t) => {
     const catChips = t.categories.map((id) => {
       const c = state.categories.find((x) => x.id === id);
       return `<span class="chip chip--cat">${esc(c ? c.name : id)}</span>`;
     }).join("");
+    const allRemote = t.source_count > 0 && t.local_files === 0;
+    const cloud = t.builtin
+      ? ""
+      : allRemote
+        ? '<span class="badge badge--cloud" title="Every file of this film is on Blob storage">on Azure</span>'
+        : azure.only
+          ? `<span class="badge badge--warn" title="Azure-only mode: this film will not play until it is published">${t.local_files} file${t.local_files === 1 ? "" : "s"} local</span>`
+          : "";
     return `<article class="admin-title${t.builtin ? " is-builtin" : ""}">
       <img class="admin-title__art" src="${esc(t.poster)}" alt="" width="80" height="120" loading="lazy">
       <div class="admin-title__body">
         <div class="admin-title__name">
           ${esc(t.title)}
           ${t.builtin ? '<span class="badge">built-in</span>' : ""}
+          ${cloud}
         </div>
         <div class="admin-title__meta">
           ${[t.year, (t.qualities || []).map((q) => `${q}p`).join(" · "), `${t.source_count} source${t.source_count === 1 ? "" : "s"}`]
@@ -125,7 +136,11 @@ function renderTitles() {
       <div class="admin-title__actions">
         ${t.builtin
           ? '<span class="hint">read-only</span>'
-          : `<button class="btn btn--ghost" type="button" data-edit="${esc(t.id)}">Edit</button>
+          : `${canPublish && t.local_files > 0
+              ? `<button class="btn btn--ghost" type="button" data-azure-title="${esc(t.id)}"
+                   title="Upload every file of this film, master and rendition, so none of it streams from this PC">Send film to Azure</button>`
+              : ""}
+             <button class="btn btn--ghost" type="button" data-edit="${esc(t.id)}">Edit</button>
              <button class="btn btn--danger" type="button" data-del="${esc(t.id)}">Remove</button>`}
       </div>
     </article>`;
@@ -169,15 +184,18 @@ function renderFiles() {
     : '<p class="empty">No media files yet.</p>';
 }
 
-/** What Blob storage is, and whether this run can actually write to it. */
+/** What Blob storage is, whether this run can write to it, and where playback comes from. */
 function renderAzure() {
   const a = state.azure || {};
   const hint = $("azure-hint");
+  const only = a.only
+    ? " Azure-only is on: a film streams from Blob storage or not at all."
+    : "";
   if (!a.configured) {
     hint.hidden = false;
     hint.textContent = a.container
-      ? `Blob storage is set up at ${a.container} but has no key yet. Paste a container SAS into AZURE_SAS and restart; films stay on this PC meanwhile.`
-      : "Blob storage is not configured. Set AZURE_CONTAINER_URL and AZURE_SAS, then restart; films stay on this PC meanwhile.";
+      ? `Blob storage is set up at ${a.container} but has no key yet. Paste a container SAS into AZURE_SAS and restart.${only || " Films stay on this PC meanwhile."}`
+      : `Blob storage is not configured. Set AZURE_CONTAINER_URL and AZURE_SAS, then restart.${only || " Films stay on this PC meanwhile."}`;
     return;
   }
   hint.hidden = false;
@@ -186,7 +204,7 @@ function renderAzure() {
     : " This SAS is signed for a single blob, so uploads are refused — generate a container SAS.";
   const exp = a.expires ? ` Token expires ${a.expires}.` : "";
   hint.textContent =
-    `Publishing to ${a.container}.${scope}${exp} A published film streams straight from Azure; the local copy stays.`;
+    `Publishing to ${a.container}.${scope}${exp} A published film streams straight from Azure; the local copy stays.${only}`;
 }
 
 function renderDiagnostics() {
@@ -557,37 +575,40 @@ for (const ev of ["input", "change"]) $("f-poster").addEventListener(ev, refresh
 
 // ---- publishing to Blob storage ---------------------------------------------
 /**
- * Send one file to Azure and follow it until it lands.
+ * Send one file — or every file of one film — to Azure and follow it until it
+ * lands.
  *
  * The upload is a job on the server (a film can take an hour), so this is the
  * same poll-and-draw loop the conversion uses. The local file is untouched:
- * when it finishes, every title that uses the file is pointed at the published
+ * when a file finishes, every title that uses it is pointed at the published
  * copy in the same step, so the catalogue is never ahead of the bytes.
  */
-async function sendToAzure(name, btn) {
+async function sendToAzure(query, label, btn) {
   const progress = $("azure-progress");
   const text = $("azure-progress-text");
   btn.disabled = true;
   progress.hidden = false;
   progress.value = 0;
   text.hidden = false;
-  text.textContent = `Sending ${name} to Azure…`;
+  text.textContent = `Sending ${label} to Azure…`;
   try {
-    const started = await api(`/api/admin/azure?file=${encodeURIComponent(name)}`, { method: "POST" });
+    const started = await api(`/api/admin/azure?${query}`, { method: "POST" });
     if (!started.ok) throw new Error(started.data.message || started.data.error || "the upload could not start");
     let job = started.data.job;
     while (job.status === "running") {
+      const step = job.count > 1 ? ` (${job.index + 1}/${job.count})` : "";
       progress.value = job.percent || 0;
-      text.textContent = `Sending ${name} — ${job.percent || 0}% of ${bytes(job.total)}`;
+      text.textContent = `Sending ${job.file}${step} — ${job.percent || 0}% of ${bytes(job.total)}`;
       await new Promise((r) => setTimeout(r, 1200));
       const r = await api(`/api/admin/azure?id=${encodeURIComponent(job.id)}`);
       if (!r.ok) throw new Error("lost track of the upload");
       job = r.data.job;
     }
     if (job.status !== "done") throw new Error(job.error || "the upload did not finish");
+    const what = job.count > 1 ? `${job.count} files (${bytes(job.total)})` : `${job.file} (${bytes(job.total)})`;
     text.textContent =
-      `${name} is published (${bytes(job.bytes)}). ${job.titles} title${job.titles === 1 ? "" : "s"} now stream it from Azure.`;
-    toast(`Published ${name} to Azure`);
+      `${what} published. ${job.titles} title${job.titles === 1 ? "" : "s"} now stream from Azure.`;
+    toast(`Published ${label} to Azure`);
     await refresh();
   } catch (err) {
     text.hidden = true;
@@ -600,7 +621,9 @@ async function sendToAzure(name, btn) {
 
 $("files").addEventListener("click", async (e) => {
   const publish = e.target.closest("[data-azure]");
-  if (publish && !publish.disabled) return sendToAzure(publish.dataset.azure, publish);
+  if (publish && !publish.disabled) {
+    return sendToAzure(`file=${encodeURIComponent(publish.dataset.azure)}`, publish.dataset.azure, publish);
+  }
 
   const local = e.target.closest("[data-azure-off]");
   if (!local || local.disabled) return;
@@ -614,6 +637,14 @@ $("files").addEventListener("click", async (e) => {
     toast(err.message, "err");
     local.disabled = false;
   }
+});
+
+$("titles").addEventListener("click", (e) => {
+  const film = e.target.closest("[data-azure-title]");
+  if (!film || film.disabled) return;
+  const id = film.dataset.azureTitle;
+  const t = state.titles.find((x) => x.id === id);
+  sendToAzure(`title=${encodeURIComponent(id)}`, (t && t.title) || id, film);
 });
 
 // ---- save -------------------------------------------------------------------

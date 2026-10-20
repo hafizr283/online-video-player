@@ -1175,7 +1175,16 @@ if (section && dataEl) {
   ensureGateTokens().then(() => {
     applyConfig();
     const first = defaultSource({ sources: state.sources }, null);
-    if (!first) { notice("No playable source is configured.", { type: "error", timeout: 8000 }); return; }
+    if (!first) {
+      const pending = state.config && state.config.pending_publish;
+      notice(
+        pending
+          ? "This film is being moved to Blob storage. It will play here as soon as its files are published."
+          : "No playable source is configured.",
+        { type: pending ? "warning" : "error", timeout: pending ? 12000 : 8000 },
+      );
+      return;
+    }
     mountSource(first, { autoplay: false });
     // fire-and-forget view telemetry, like the original
     fetch("/media/event", {

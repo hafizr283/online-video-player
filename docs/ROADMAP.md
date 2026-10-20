@@ -5,11 +5,23 @@ what it costs, so the next one can be picked without re-deriving the reasoning.
 
 ## Waiting on one credential
 
-**Publish a film to Blob storage and measure it.** The code path is complete and
-tested against a mock container (`test-azure.mjs`, 20 checks), and playback from
-a real public blob has been verified in a browser. What has *not* run yet is a
-real upload, because writing needs a **container** SAS (`sr=c`, Read/Add/Create/
+**Publish the three films and measure it.** The code path is complete and tested
+against a mock container (`test-azure.mjs`, 31 checks), and playback from a real
+public blob has been verified in a browser. What has *not* run yet is a real
+upload, because writing needs a **container** SAS (`sr=c`, Read/Add/Create/
 Write). A blob SAS (`sr=b`) is refused on purpose.
+
+Two ways in, and the second needs no key at all:
+
+1. Generate a container SAS and put it in `<storage>/.azure.env`. Then **Send
+   film to Azure** from the admin publishes a film's master and rendition in one
+   job.
+2. Upload the files through the Azure portal and let the server adopt them:
+   `PATCH /api/admin/azure?file=<local>&blob=v1/...` verifies the blob with a
+   public `HEAD` and points the title at it (see HOSTING.md).
+
+Once every title reports `0` local files, `AZURE_ONLY=1` makes "streaming from
+this PC" impossible rather than merely unlikely.
 
 When it runs, record: upload seconds and MB/s from this PC's uplink, first-byte
 time from the player local vs. remote, and whether Chrome ever needs the CORS

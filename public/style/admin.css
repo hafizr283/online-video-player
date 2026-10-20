@@ -215,6 +215,11 @@ fieldset.field { border: 1px solid var(--line); border-radius: 10px; padding: 14
   margin-left: 8px;
 }
 
+/* "on Azure" and "still local" have to read at a glance, because Azure-only
+   mode turns the second one into "this film will not play". */
+.badge--cloud { background: #14261f; color: #63d3a2; }
+.badge--warn { background: #2b2113; color: #e2b25c; }
+
 .admin-files { padding: 6px 0; }
 
 .file-row {

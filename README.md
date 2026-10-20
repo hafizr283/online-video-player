@@ -82,6 +82,7 @@ Every option is optional; the defaults run a local demo.
 | `TRANSCODE_RENDITIONS` | `480` | height of the small copy, or `none` |
 | `AZURE_CONTAINER_URL` | unset | `https://<account>.blob.core.windows.net/<container>` |
 | `AZURE_SAS` | unset | a **container** SAS with Read/Add/Create/Write |
+| `AZURE_ONLY` | unset | `1` = stream only from Blob storage; an unpublished film will not play |
 
 Publishing to Blob storage, the gate, and the mirrors are described in
 [HOSTING.md](HOSTING.md).
