@@ -76,6 +76,50 @@ a { color: inherit; text-decoration: none; }
 
 .site-bar__link:hover { border-color: #3d3d52; background: #1c1c26; }
 
+/* The way into the admin. It is the only control that changes the library, so
+   it is drawn as a control: brand gradient, a sliders glyph, and a lift on
+   hover. The token behind it is the real gate, never the link's visibility. */
+.site-bar__admin {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 15px 6px 11px;
+  border-radius: 999px;
+  font-size: 12.5px;
+  font-weight: 650;
+  letter-spacing: .15px;
+  color: #fff;
+  white-space: nowrap;
+  background: linear-gradient(180deg, #ff3d63, #d61c42);
+  border: 1px solid rgba(255, 130, 155, .55);
+  box-shadow: 0 2px 12px rgba(255, 45, 85, .28), inset 0 1px 0 rgba(255, 255, 255, .22);
+  transition: transform .16s ease, box-shadow .22s ease, filter .2s ease;
+}
+
+.site-bar__admin svg { width: 15px; height: 15px; flex: none; }
+
+.site-bar__admin:hover {
+  filter: brightness(1.07);
+  transform: translateY(-1px);
+  box-shadow: 0 8px 24px rgba(255, 45, 85, .36), inset 0 1px 0 rgba(255, 255, 255, .26);
+}
+
+.site-bar__admin:active { transform: translateY(0); filter: brightness(.97); }
+
+.site-bar__admin:focus-visible { outline: 2px solid #fff; outline-offset: 3px; }
+
+@media (max-width: 560px) {
+  .site-bar { gap: 10px; padding: 12px 14px; }
+  .site-bar__tag { display: none; }
+  .site-bar__admin span { display: none; }
+  .site-bar__admin { padding: 8px 9px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .site-bar__admin { transition: none; }
+  .site-bar__admin:hover { transform: none; }
+}
+
 /* ---- category chips ------------------------------------------------------- */
 .chipbar {
   display: flex;

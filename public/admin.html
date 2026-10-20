@@ -115,6 +115,16 @@
 
         <div class="src-table" id="src-rows"></div>
         <button class="btn btn--ghost" type="button" id="add-src">Add a source row</button>
+
+        <!-- Once a film exists, a second click should not be needed to move it
+             off this PC: saving is the decision, publishing follows it. -->
+        <label class="auto-azure" id="auto-azure">
+          <input id="f-auto-azure" type="checkbox" checked>
+          <span>
+            <b>Send to Azure after saving</b>
+            <em>Starts the upload to Blob storage on its own and shows its progress.</em>
+          </span>
+        </label>
       </fieldset>
 
       <p id="form-err" class="admin-err" hidden></p>
@@ -148,12 +158,23 @@
       <span class="hint" id="orphan-hint"></span>
     </div>
     <p class="hint" id="azure-hint" hidden></p>
-    <p class="hint" id="azure-progress-text" hidden></p>
-    <progress id="azure-progress" max="100" value="0" hidden></progress>
     <div id="files" class="admin-files"></div>
   </section>
 
 </main>
+
+<!-- One card for every long transfer, fixed above the toast so progress stays
+     in sight while the page scrolls. It is the same panel for an automatic
+     send after saving and for a manual one. -->
+<section id="transfer" class="transfer" hidden aria-live="polite">
+  <div class="transfer__head">
+    <span class="transfer__pulse" aria-hidden="true"></span>
+    <strong id="transfer-title">Sending to Azure…</strong>
+    <button class="transfer__cancel" id="transfer-cancel" type="button">Cancel</button>
+  </div>
+  <progress id="transfer-progress" max="100" value="0"></progress>
+  <p class="transfer__detail" id="transfer-detail"></p>
+</section>
 
 <div id="toast" class="toast" role="status" aria-live="polite"></div>
 

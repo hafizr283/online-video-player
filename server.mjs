@@ -1085,6 +1085,17 @@ function resolveDevSource(all, q) {
 // ---------------------------------------------------------------------------
 const ADMIN_TOKEN = String(process.env.ADMIN_TOKEN || "");
 const ADMIN_ON = ADMIN_TOKEN.length > 0;
+
+// The way into the library from every page. It is a control, not a text link:
+// this is the one button that changes what the site contains, and the token
+// behind it, not the link's visibility, is what actually guards it.
+const ADMIN_BUTTON =
+  '<a class="site-bar__admin" href="/admin" title="Manage videos" aria-label="Manage videos">' +
+  '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" ' +
+  'stroke-linecap="round" aria-hidden="true" focusable="false">' +
+  '<path d="M4 7h9M17 7h3M4 17h3M11 17h9"/>' +
+  '<circle cx="15" cy="7" r="2.2"/><circle cx="9" cy="17" r="2.2"/></svg>' +
+  "<span>Manage videos</span></a>";
 const MAX_UPLOAD_BYTES = Number(process.env.MAX_UPLOAD_BYTES || 2 * 1024 * 1024 * 1024);
 const VIDEO_EXT = new Set([".mp4", ".mkv", ".webm", ".m4v", ".mov"]);
 
@@ -1714,6 +1725,9 @@ async function startUpload(res, url) {
   }
   const file = String(url.searchParams.get("file") || "");
   const titleId = String(url.searchParams.get("title") || "");
+  // An automatic publish moves what is not on Azure yet. A manual ?title= still
+  // re-sends every file, which is what "publish this again" means.
+  const onlyLocal = String(url.searchParams.get("only") || "") === "local";
 
   // ?file= sends one file; ?title= sends the film â€” master, rendition and any
   // other copy the title lists â€” in one job, because the point of publishing is
@@ -1723,8 +1737,14 @@ async function startUpload(res, url) {
     const t = await titleById(titleId);
     if (!t) return sendJson(res, 404, { ok: false, error: "unknown_title", message: `No title with id "${titleId}".` });
     names = [...new Set(t.sources.map((s) => String((s && s.file) || "")))].filter((n) => isBareName(n));
+    if (onlyLocal) {
+      names = names.filter((name) =>
+        t.sources.some((s) => String((s && s.file) || "") === name && !(s.remote && s.remote.url)));
+    }
     if (!names.length) {
-      return sendJson(res, 400, { ok: false, error: "no_files", message: "That title lists no source files." });
+      return onlyLocal
+        ? sendJson(res, 200, { ok: true, nothing: true, message: "Every file of this film is already on Azure." })
+        : sendJson(res, 400, { ok: false, error: "no_files", message: "That title lists no source files." });
     }
   } else {
     if (!isBareName(file) || !(await exists(join(STORAGE, file)))) {
@@ -2766,7 +2786,9 @@ async function handleSite(req, res) {
   // local either way: a visitor has no use for a login page, and it should not
   // be advertised on a public catalogue.
   const adminHidden = ADMIN_LOCAL_ONLY && !isLocalRequest(req);
-  const showAdminLink = ADMIN_ON && !adminHidden && isLocalRequest(req);
+  // ADMIN_LOCAL_ONLY=1 closes the door to the internet; the button follows the
+  // door, not the visitor's address.
+  const showAdminLink = ADMIN_ON && !adminHidden;
   if (p === "/admin" || p === "/admin/") {
     if (!ADMIN_ON || adminHidden) return notFoundPage(res, "Not found.");
     pageHits += 1;
@@ -2783,9 +2805,7 @@ async function handleSite(req, res) {
     pageHits += 1;
     // The admin link is injected rather than hard-coded so a deployment without
     // ADMIN_TOKEN does not advertise a page that 404s.
-    const adminLink = showAdminLink
-      ? '<a class="site-bar__link" href="/admin">Manage library</a>'
-      : "";
+    const adminLink = showAdminLink ? ADMIN_BUTTON : "";
     // The hero is the largest thing on the page and it is chosen by script, so
     // the browser would otherwise not start fetching it until the catalogue
     // arrived. Naming it in the head starts the download during HTML parse.
@@ -2856,6 +2876,7 @@ async function handleSite(req, res) {
     const html = (await readFile(join(PUBLIC, "movie.html"), "utf8"))
       .replace("<!--MLBD_PLAYER_CONFIG-->", injected)
       .replace("<!--MLBD_TITLE_META-->", meta)
+      .replace("<!--MLBD_ADMIN_LINK-->", showAdminLink ? ADMIN_BUTTON : "")
       .replace("<!--MLBD_HEAD_META-->", headMeta)
       .replaceAll("<!--MLBD_TITLE-->", escapeHtml(t.title));
     // The developer panel ships in the file so a developer can turn it on, but a
@@ -2872,9 +2893,7 @@ async function handleSite(req, res) {
     if (!data) return notFoundPage(res, `No category with id "${catPage[1]}".`);
 
     pageHits += 1;
-    const adminLink = showAdminLink
-      ? '<a class="site-bar__link" href="/admin">Manage library</a>'
-      : '<a class="site-bar__link" href="/">Browse all</a>';
+    const adminLink = showAdminLink ? ADMIN_BUTTON : '<a class="site-bar__link" href="/">Browse all</a>';
     const meta =
       `<script id="mlbdCategoryMeta" type="application/json">` +
       `${JSON.stringify({ id: data.category.id, name: data.category.name, count: data.count }).replace(/</g, "\\u003c")}</script>`;

@@ -96,6 +96,9 @@ function renderAll() {
   renderAzure();
   renderDiagnostics();
   renderCategoryPicker();
+
+  // The switch only exists where it can act.
+  $("auto-azure").hidden = !azureReady();
 }
 
 function renderTitles() {
@@ -675,50 +678,164 @@ $("files").addEventListener("click", async (e) => {
 for (const ev of ["input", "change"]) $("f-poster").addEventListener(ev, refreshPosterPreview);
 
 // ---- publishing to Blob storage ---------------------------------------------
+const AUTO_KEY = "mlbd_auto_publish";
+
+function azureReady() {
+  const a = (state && state.azure) || {};
+  return Boolean(a.configured && a.scope === "container");
+}
+
+// The standing answer to "send this film to Azure?", remembered between visits
+// and on by default: in Azure-only mode a film left on this PC cannot play.
+(function initAutoPublish() {
+  const box = $("f-auto-azure");
+  const saved = localStorage.getItem(AUTO_KEY);
+  box.checked = saved === null ? true : saved === "1";
+  box.addEventListener("change", () => localStorage.setItem(AUTO_KEY, box.checked ? "1" : "0"));
+})();
+
+let activeTransfer = null; // only a job this page started may be cancelled here
+let transferSeq = 0;
+
+function showTransfer(title) {
+  transferSeq += 1;
+  $("transfer").hidden = false;
+  $("transfer-title").textContent = title;
+  $("transfer-progress").value = 0;
+  $("transfer-detail").textContent = "";
+}
+
+function hideTransfer() {
+  $("transfer").hidden = true;
+}
+
 /**
- * Send one file — or every file of one film — to Azure and follow it until it
- * lands.
- *
- * The upload is a job on the server (a film can take an hour), so this is the
- * same poll-and-draw loop the conversion uses. The local file is untouched:
- * when a file finishes, every title that uses it is pointed at the published
- * copy in the same step, so the catalogue is never ahead of the bytes.
+ * Follow one Azure job until it lands, drawing percent, speed and the time
+ * left. Speed is measured here between polls, so no extra clock has to travel
+ * over the wire.
  */
-async function sendToAzure(query, label, btn) {
-  const progress = $("azure-progress");
-  const text = $("azure-progress-text");
-  btn.disabled = true;
-  progress.hidden = false;
-  progress.value = 0;
-  text.hidden = false;
-  text.textContent = `Sending ${label} to Azure…`;
+async function followTransfer(job, label, { owned = true } = {}) {
+  activeTransfer = owned ? job.id : null;
+  $("transfer-cancel").hidden = !owned;
+
+  const sample = { bytes: Number(job.bytes) || 0, at: Date.now() };
+  let speed = 0;
+
+  while (job.status === "running") {
+    const percent = Math.round(Number(job.percent) || 0);
+    const step = job.count > 1 ? ` (${job.index + 1}/${job.count})` : "";
+    $("transfer-title").textContent = `${owned ? "Sending" : "Waiting for"} ${label} to Azure${step}`;
+    $("transfer-progress").value = percent;
+
+    const now = Date.now();
+    const seconds = (now - sample.at) / 1000;
+    const sent = Number(job.bytes) || 0;
+    if (seconds >= 1 && sent >= sample.bytes) {
+      speed = (sent - sample.bytes) / seconds;
+      sample.bytes = sent;
+      sample.at = now;
+    }
+    const left = speed > 0 ? (Number(job.total) - sent) / speed : 0;
+    const eta = left <= 0
+      ? ""
+      : left >= 60
+        ? ` · ${Math.max(1, Math.round(left / 60))} min left`
+        : ` · ${Math.ceil(left)} s left`;
+    $("transfer-detail").textContent =
+      `${job.file} — ${percent}% of ${bytes(job.total)}${speed > 0 ? ` · ${bytes(speed)}/s` : ""}${eta}`;
+
+    await new Promise((r) => setTimeout(r, 1200));
+    const r = await api(`/api/admin/azure?id=${encodeURIComponent(job.id)}`);
+    if (!r.ok) throw new Error("lost track of the transfer");
+    job = r.data.job;
+  }
+
+  activeTransfer = null;
+  return job;
+}
+
+/**
+ * Send one file — or every unpublished file of one film — to Azure and follow
+ * it until it lands. The local file is untouched: when a file finishes, every
+ * title that uses it is pointed at the published copy in the same step, so the
+ * catalogue is never ahead of the bytes.
+ */
+async function sendToAzure(query, label, btn, retried = false) {
+  if (btn) btn.disabled = true;
+  showTransfer(`Sending ${label} to Azure`);
+  const seq = transferSeq;
   try {
     const started = await api(`/api/admin/azure?${query}`, { method: "POST" });
-    if (!started.ok) throw new Error(started.data.message || started.data.error || "the upload could not start");
-    let job = started.data.job;
-    while (job.status === "running") {
-      const step = job.count > 1 ? ` (${job.index + 1}/${job.count})` : "";
-      progress.value = job.percent || 0;
-      text.textContent = `Sending ${job.file}${step} — ${job.percent || 0}% of ${bytes(job.total)}`;
-      await new Promise((r) => setTimeout(r, 1200));
-      const r = await api(`/api/admin/azure?id=${encodeURIComponent(job.id)}`);
-      if (!r.ok) throw new Error("lost track of the upload");
-      job = r.data.job;
+
+    if (!started.ok && started.data.nothing) {
+      hideTransfer();
+      toast(`${label} is already on Azure.`);
+      return;
     }
+
+    // The server moves one film at a time. Let the one already in flight finish,
+    // then send this — that is the whole point of queueing instead of clicking.
+    if (!started.ok && started.data.error === "busy" && started.data.job && !retried) {
+      await followTransfer(started.data.job, started.data.job.file, { owned: false });
+      return sendToAzure(query, label, btn, true);
+    }
+
+    if (!started.ok) throw new Error(started.data.message || started.data.error || "the upload could not start");
+
+    const job = await followTransfer(started.data.job, label);
     if (job.status !== "done") throw new Error(job.error || "the upload did not finish");
+
     const what = job.count > 1 ? `${job.count} files (${bytes(job.total)})` : `${job.file} (${bytes(job.total)})`;
-    text.textContent =
-      `${what} published. ${job.titles} title${job.titles === 1 ? "" : "s"} now stream from Azure.`;
+    $("transfer-title").textContent = "Published to Azure";
+    $("transfer-detail").textContent =
+      `${what} · ${job.titles} title${job.titles === 1 ? "" : "s"} now stream from Azure`;
+    $("transfer-progress").value = 100;
+    $("transfer-cancel").hidden = true;
     toast(`Published ${label} to Azure`);
     await refresh();
+    setTimeout(() => { if (seq === transferSeq) hideTransfer(); }, 5000);
   } catch (err) {
-    text.hidden = true;
+    hideTransfer();
     toast(err.message, "err");
   } finally {
-    progress.hidden = true;
-    btn.disabled = false;
+    if (btn) btn.disabled = false;
   }
 }
+
+// Films saved while another transfer is running wait their turn here, so an
+// upload never needs a second click even when the first film is still going.
+const azureQueue = [];
+let azurePumping = false;
+
+function queueAzure(id, label) {
+  if (!azureQueue.some((q) => q.id === id)) azureQueue.push({ id, label });
+  return pumpAzure();
+}
+
+async function pumpAzure() {
+  if (azurePumping || !azureQueue.length) return;
+  azurePumping = true;
+  try {
+    while (azureQueue.length) {
+      const next = azureQueue.shift();
+      await sendToAzure(`title=${encodeURIComponent(next.id)}&only=local`, next.label, null);
+    }
+  } finally {
+    azurePumping = false;
+  }
+}
+
+$("transfer-cancel").addEventListener("click", async () => {
+  if (!activeTransfer) return;
+  const id = activeTransfer;
+  $("transfer-cancel").disabled = true;
+  try {
+    const r = await api(`/api/admin/azure?id=${encodeURIComponent(id)}`, { method: "DELETE" });
+    toast(r.ok ? "Transfer cancelled." : r.data.message || "Could not cancel the transfer.", r.ok ? "ok" : "err");
+  } finally {
+    $("transfer-cancel").disabled = false;
+  }
+});
 
 $("files").addEventListener("click", async (e) => {
   const publish = e.target.closest("[data-azure]");
@@ -781,6 +898,13 @@ $("movie-form").addEventListener("submit", async (e) => {
   else toast(r.data.created ? `Added ${r.data.id}` : `Saved ${r.data.id}`);
   closeEditor();
   await refresh();
+
+  // Saving a film that still has local files is the decision to publish it;
+  // asking for the same decision again on the next line is just friction.
+  const saved = state.titles.find((t) => t.id === r.data.id);
+  if ($("f-auto-azure").checked && azureReady() && saved && saved.local_files > 0) {
+    queueAzure(saved.id, saved.title);
+  }
 });
 
 // ---- refresh ----------------------------------------------------------------
