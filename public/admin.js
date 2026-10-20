@@ -387,7 +387,128 @@ zone.addEventListener("drop", (e) => {
   if (file) upload(file);
 });
 
-async function upload(file) {  const title = $("f-title").value.trim();
+/** Below this a single POST is simpler; above it the edge would refuse the body. */
+const ONE_POST = 4 * 1024 * 1024;
+const UPLOAD_REMEMBER = "mlbd-upload";
+
+const chunkKey = (file) => `${file.name}|${file.size}|${file.lastModified}`;
+const remembered = () => { try { return JSON.parse(localStorage.getItem(UPLOAD_REMEMBER) || "null"); } catch { return null; } };
+const remember = (v) => {
+  try { v ? localStorage.setItem(UPLOAD_REMEMBER, JSON.stringify(v)) : localStorage.removeItem(UPLOAD_REMEMBER); }
+  catch { /* private mode */ }
+};
+
+/** One request. Fine for a clip; the edge refuses a film. */
+function uploadWhole(file, { title, quality, progress }) {
+  const qs = new URLSearchParams({ name: file.name, title, quality: String(quality) });
+  // XHR rather than fetch: it reports upload progress, which matters for a
+  // multi-gigabyte file and a silent-looking form.
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open("POST", `/api/admin/upload?${qs}`);
+    xhr.setRequestHeader("X-Admin-Token", token);
+    xhr.upload.addEventListener("progress", (e) => {
+      if (e.lengthComputable) progress.value = Math.round((e.loaded / e.total) * 100);
+    });
+    xhr.addEventListener("load", () => {
+      let data = {};
+      try { data = JSON.parse(xhr.responseText); } catch { /* ignore */ }
+      if (xhr.status === 200) resolve(data);
+      else if (xhr.status === 401) { lock("That token was not accepted."); reject(new Error("unauthorised")); }
+      else reject(new Error(data.error === "too_large"
+        ? `File is larger than the ${bytes(state.limits.max_upload_bytes)} limit.`
+        : data.error || `HTTP ${xhr.status}`));
+    });
+    xhr.addEventListener("error", () => reject(new Error("network error")));
+    xhr.send(file);
+  });
+}
+
+function postPiece(id, index, blob) {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open("POST", `/api/admin/upload/chunk?id=${id}&index=${index}`);
+    xhr.setRequestHeader("X-Admin-Token", token);
+    xhr.addEventListener("load", () => {
+      let data = {};
+      try { data = JSON.parse(xhr.responseText); } catch { /* ignore */ }
+      if (xhr.status === 200) resolve(data);
+      else if (xhr.status === 401) { lock("That token was not accepted."); reject(new Error("unauthorised")); }
+      else reject(new Error(data.message || data.error || `HTTP ${xhr.status}`));
+    });
+    xhr.addEventListener("error", () => reject(new Error("network error")));
+    xhr.addEventListener("timeout", () => reject(new Error("timed out")));
+    xhr.send(blob);
+  });
+}
+
+/**
+ * Send a film in pieces the edge will accept.
+ *
+ * The session lives in localStorage, so closing the tab is not fatal: choosing
+ * the same file again asks the server which pieces it already has and sends
+ * only the rest.
+ */
+async function uploadInChunks(file, { title, quality, progress, hint }) {
+  const key = chunkKey(file);
+  let session = remembered();
+  if (!session || session.key !== key) session = null;
+
+  let info = null;
+  if (session) {
+    const known = await api(`/api/admin/upload/session?id=${session.id}`);
+    if (known.ok) info = known.data;
+    else session = null;
+  }
+  if (!session) {
+    const started = await api("/api/admin/upload/session", {
+      method: "POST",
+      body: { name: file.name, size: file.size, title, quality },
+    });
+    if (!started.ok) {
+      throw new Error(started.data.error === "too_large"
+        ? `File is larger than the ${bytes(state.limits.max_upload_bytes)} limit.`
+        : started.data.message || started.data.error || "the upload could not start");
+    }
+    session = { key, id: started.data.id };
+    remember(session);
+    info = started.data;
+  }
+
+  const chunk = info.chunk || 32 * 1024 * 1024;
+  const expected = Math.ceil(file.size / chunk);
+  const have = new Set(info.received || []);
+  if (have.size) {
+    const doneBytes = [...have].reduce((a, i) => a + Math.min(chunk, file.size - i * chunk), 0);
+    hint.textContent = `Resuming ${file.name} at ${bytes(doneBytes)} of ${bytes(file.size)}…`;
+  }
+
+  for (let index = 0; index < expected; index++) {
+    if (have.has(index)) continue;
+    const start = index * chunk;
+    const blob = file.slice(start, Math.min(start + chunk, file.size));
+    for (let attempt = 1; ; attempt++) {
+      try { await postPiece(session.id, index, blob); break; }
+      catch (e) {
+        if (attempt >= 3) throw new Error(`piece ${index + 1} of ${expected} failed: ${e.message}`);
+        hint.textContent = `Piece ${index + 1}/${expected} failed — retrying (${attempt}/3)…`;
+        await new Promise((r) => setTimeout(r, 1500 * attempt));
+      }
+    }
+    const done = Math.min(file.size, (index + 1) * chunk);
+    progress.value = Math.round((done / file.size) * 100);
+    hint.textContent = `Uploading ${file.name} — ${index + 1}/${expected} (${bytes(done)} of ${bytes(file.size)})`;
+  }
+
+  hint.textContent = `All ${expected} pieces are here. Joining them…`;
+  const finished = await api(`/api/admin/upload/finish?id=${session.id}`, { method: "POST" });
+  remember(null);
+  if (!finished.ok) throw new Error(finished.data.message || finished.data.error || "the pieces could not be joined");
+  return finished.data;
+}
+
+async function upload(file) {
+  const title = $("f-title").value.trim();
   const progress = $("upload-progress");
   const hint = $("upload-hint");
   progress.hidden = false;
@@ -395,30 +516,10 @@ async function upload(file) {  const title = $("f-title").value.trim();
   hint.textContent = `Uploading ${file.name} (${bytes(file.size)})…`;
 
   const quality = readSources().map((s) => Number(s.quality)).find((q) => q > 0) || 0;
-  const qs = new URLSearchParams({ name: file.name, title: title || "video", quality: String(quality) });
+  const ctx = { title: title || "video", quality, progress, hint };
 
   try {
-    // XHR rather than fetch: it reports upload progress, which matters for a
-    // multi-gigabyte file and a silent-looking form.
-    const result = await new Promise((resolve, reject) => {
-      const xhr = new XMLHttpRequest();
-      xhr.open("POST", `/api/admin/upload?${qs}`);
-      xhr.setRequestHeader("X-Admin-Token", token);
-      xhr.upload.addEventListener("progress", (e) => {
-        if (e.lengthComputable) progress.value = Math.round((e.loaded / e.total) * 100);
-      });
-      xhr.addEventListener("load", () => {
-        let data = {};
-        try { data = JSON.parse(xhr.responseText); } catch { /* ignore */ }
-        if (xhr.status === 200) resolve(data);
-        else if (xhr.status === 401) { lock("That token was not accepted."); reject(new Error("unauthorised")); }
-        else reject(new Error(data.error === "too_large"
-          ? `File is larger than the ${bytes(state.limits.max_upload_bytes)} limit.`
-          : data.error || `HTTP ${xhr.status}`));
-      });
-      xhr.addEventListener("error", () => reject(new Error("network error")));
-      xhr.send(file);
-    });
+    const result = file.size <= ONE_POST ? await uploadWhole(file, ctx) : await uploadInChunks(file, ctx);
 
     state.files.push({ name: result.file, bytes: result.bytes, referenced: false });
     state.files.sort((a, b) => a.name.localeCompare(b.name));
@@ -688,6 +789,16 @@ async function refresh() {
   if (!r.ok) return;
   state = r.data;
   renderAll();
+  notePendingUpload();
+}
+
+/** An interrupted upload is worth mentioning before the next file is chosen. */
+function notePendingUpload() {
+  const pending = remembered();
+  const hint = $("upload-hint");
+  if (!pending || !hint || hint.textContent.trim()) return;
+  const name = String(pending.key || "").split("|")[0];
+  hint.textContent = `Unfinished upload on the server: ${name}. Choose the same file to carry on where it stopped.`;
 }
 
 $("refresh").addEventListener("click", async () => {

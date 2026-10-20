@@ -1,5 +1,5 @@
 /**
- * MovieLinkBD-style inline player — reference server.
+ * MovieLinkBD-style inline player â€” reference server.
  *
  * One process, four listeners, because the real system talks to a CDN on a
  * different origin than the site:
@@ -29,7 +29,7 @@ import { createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypt
 import { gzipSync } from "node:zlib";
 import { createReadStream, createWriteStream } from "node:fs";
 import { once } from "node:events";
-import { readFile, readdir, rename, stat, unlink, writeFile, mkdir, statfs, copyFile } from "node:fs/promises";
+import { readFile, readdir, rename, rm, stat, unlink, writeFile, mkdir, statfs, copyFile } from "node:fs/promises";
 import { basename, extname, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { probeMedia } from "./media-probe.mjs";
@@ -1701,8 +1701,8 @@ async function startUpload(res, url) {
   const file = String(url.searchParams.get("file") || "");
   const titleId = String(url.searchParams.get("title") || "");
 
-  // ?file= sends one file; ?title= sends the film — master, rendition and any
-  // other copy the title lists — in one job, because the point of publishing is
+  // ?file= sends one file; ?title= sends the film â€” master, rendition and any
+  // other copy the title lists â€” in one job, because the point of publishing is
   // that none of it is left on this PC.
   let names;
   if (titleId) {
@@ -2140,6 +2140,40 @@ async function adminState() {
   };
 }
 
+/** "My Film" + 720 -> "my-film-720": the name a film gets on disk. */
+function uploadStem(title, quality) {
+  const base = slugify(title || "video");
+  const q = Number(quality) || 0;
+  return q > 0 ? `${base}-${q}` : base;
+}
+
+/** First name that does not collide with something already in the media folder. */
+async function freeName(stem, ext) {
+  let file = `${stem}${ext}`;
+  for (let n = 2; await exists(join(STORAGE, file)); n++) file = `${stem}-${n}${ext}`;
+  return file;
+}
+
+/**
+ * Inspect a file that has just landed and tell the admin what it is.
+ *
+ * Shared by the one-shot upload and the chunked one so a film is described the
+ * same way no matter how it arrived.
+ */
+async function finishUpload(res, { file, bytes, original, stem }) {
+  const probe = await probeMedia(join(STORAGE, file));
+  const poster = await posterFor(join(STORAGE, file), stem);
+  const warnings = probe.playable === false
+    ? [`${file} will not play in a browser: ${probe.reason || "the format is not supported"}`]
+    : [];
+  console.log(`[admin] uploaded ${file} (${bytes} bytes, ${probe.container}${probe.video ? "/" + probe.video.codec : ""}${probe.playable === false ? ", NOT browser-playable" : ""}${poster ? ", poster taken" : ""})`);
+  return sendJson(res, 200, {
+    ok: true, file, bytes, original: original || null, probe, warnings, poster,
+    needs_conversion: probe.playable === false,
+    conversion: { available: Boolean(FFMPEG), encoder: TRANSCODE_ENCODER, kind: FFMPEG ? planConversion(probe, { encoder: TRANSCODE_ENCODER })?.kind || null : null, rendition: RENDITION_HEIGHT || null },
+  });
+}
+
 /** Stream one upload to storage/, then rename into place. */
 async function handleUpload(req, res, url) {
   const original = String(url.searchParams.get("name") || "");
@@ -2148,11 +2182,8 @@ async function handleUpload(req, res, url) {
     return sendJson(res, 400, { ok: false, error: "bad_extension", allowed: [...VIDEO_EXT] });
   }
 
-  const base = slugify(url.searchParams.get("title") || "video");
-  const quality = Number(url.searchParams.get("quality")) || 0;
-  const stem = quality > 0 ? `${base}-${quality}` : base;
-  let file = `${stem}${ext}`;
-  for (let n = 2; await exists(join(STORAGE, file)); n++) file = `${stem}-${n}${ext}`;
+  const stem = uploadStem(url.searchParams.get("title"), url.searchParams.get("quality"));
+  const file = await freeName(stem, ext);
 
   const tmp = join(STORAGE, `.upload-${randomBytes(6).toString("hex")}.part`);
   const out = createWriteStream(tmp);
@@ -2193,23 +2224,292 @@ async function handleUpload(req, res, url) {
   }
 
   await rename(tmp, join(STORAGE, file));
-  // Inspect once, here: the admin gets an immediate answer and the stored
-  // source carries the real codec from then on.
-  const probe = await probeMedia(join(STORAGE, file));
-  const poster = await posterFor(join(STORAGE, file), stem);
-  const warnings = probe.playable === false
-    ? [`${file} will not play in a browser: ${probe.reason || "the format is not supported"}`]
-    : [];
-  console.log(`[admin] uploaded ${file} (${bytes} bytes, ${probe.container}${probe.video ? "/" + probe.video.codec : ""}${probe.playable === false ? ", NOT browser-playable" : ""}${poster ? ", poster taken" : ""})`);
-  return sendJson(res, 200, {
-    ok: true, file, bytes, original: original || null, probe, warnings, poster,
-    needs_conversion: probe.playable === false,
-    conversion: { available: Boolean(FFMPEG), encoder: TRANSCODE_ENCODER, kind: FFMPEG ? planConversion(probe, { encoder: TRANSCODE_ENCODER })?.kind || null : null, rendition: RENDITION_HEIGHT || null },
-  });
+  return finishUpload(res, { file, bytes, original, stem });
+}
+
+// ---------------------------------------------------------------------------
+// Resumable uploads, for an admin who is not sitting at this machine
+//
+// Cloudflare's free plan refuses a request body over 100 MB, so a film cannot
+// arrive in one POST through the tunnel. The browser cuts the file into pieces
+// and posts them one at a time; the server keeps them in <storage>/.incoming/
+// and only joins them when the last piece is there. A dropped connection costs
+// one piece, and the same upload can be resumed after a reload.
+// ---------------------------------------------------------------------------
+const INCOMING = join(STORAGE, ".incoming");
+const CHUNK_BYTES = clamp(Number(process.env.UPLOAD_CHUNK_BYTES) || 32 * 1024 * 1024, 1024 * 1024, 64 * 1024 * 1024);
+const SESSION_ID = /^[a-f0-9]{16}$/;
+const SESSION_TTL_MS = 24 * 60 * 60 * 1000;
+
+const sessionPath = (id) => (SESSION_ID.test(String(id || "")) ? join(INCOMING, id) : "");
+
+async function readSession(id) {
+  const dir = sessionPath(id);
+  if (!dir) return null;
+  try { return JSON.parse(await readFile(join(dir, "meta.json"), "utf8")); } catch { return null; }
+}
+
+/** Which pieces are on disk, and how big each one is. */
+async function sessionParts(id) {
+  const dir = sessionPath(id);
+  if (!dir) return [];
+  const names = await readdir(dir).catch(() => []);
+  const out = [];
+  for (const n of names) {
+    const m = /^(\d+)\.part$/.exec(n);
+    if (!m) continue;
+    const size = (await stat(join(dir, n)).catch(() => ({ size: 0 }))).size;
+    out.push({ index: Number(m[1]), size });
+  }
+  return out.sort((a, b) => a.index - b.index);
+}
+
+function sessionView(meta, parts) {
+  return {
+    id: meta.id,
+    name: meta.name,
+    size: meta.size,
+    chunk: meta.chunk,
+    received: parts.map((p) => p.index),
+    bytes: parts.reduce((a, p) => a + p.size, 0),
+    expected: Math.ceil(meta.size / meta.chunk),
+  };
+}
+
+/** Drop sessions nobody came back for, so .incoming cannot grow forever. */
+async function pruneUploadSessions() {
+  const ids = (await readdir(INCOMING).catch(() => [])).filter((n) => SESSION_ID.test(n));
+  const now = Date.now();
+  let removed = 0;
+  for (const id of ids) {
+    const meta = await readSession(id);
+    if (meta && now - Number(meta.created || 0) < SESSION_TTL_MS) continue;
+    await rm(sessionPath(id), { recursive: true, force: true }).catch(() => {});
+    removed += 1;
+  }
+  if (removed) console.log(`[admin] cleared ${removed} stale upload session(s)`);
+}
+
+/** Begin a resumable upload: the answers are the piece size and the id to keep. */
+async function startSession(req, res) {
+  let body;
+  try { body = parseJson(await readBody(req)); } catch { return sendJson(res, 400, { ok: false, error: "bad_json" }); }
+
+  const original = String(body.name || "");
+  const ext = extname(original).toLowerCase();
+  if (!VIDEO_EXT.has(ext)) {
+    return sendJson(res, 400, { ok: false, error: "bad_extension", allowed: [...VIDEO_EXT] });
+  }
+  const size = Number(body.size) || 0;
+  if (!size) return sendJson(res, 400, { ok: false, error: "no_size" });
+  if (size > MAX_UPLOAD_BYTES) {
+    return sendJson(res, 413, { ok: false, error: "too_large", max_bytes: MAX_UPLOAD_BYTES });
+  }
+
+  await pruneUploadSessions();
+  const id = randomBytes(8).toString("hex");
+  const meta = {
+    id,
+    name: original,
+    size,
+    chunk: CHUNK_BYTES,
+    title: String(body.title || "video"),
+    quality: Number(body.quality) || 0,
+    created: Date.now(),
+  };
+  await mkdir(join(INCOMING, id), { recursive: true });
+  await writeFile(join(INCOMING, id, "meta.json"), JSON.stringify(meta));
+  console.log(`[admin] upload session ${id}: ${original} (${size} bytes in ${Math.ceil(size / meta.chunk)} pieces)`);
+  return sendJson(res, 200, { ok: true, id, chunk: meta.chunk, received: [], expected: Math.ceil(size / meta.chunk) });
+}
+
+/** One piece. Writing to a .tmp and renaming makes a retry of the same index safe. */
+async function receiveChunk(req, res, url) {
+  const id = String(url.searchParams.get("id") || "");
+  const meta = await readSession(id);
+  if (!meta) {
+    return sendJson(res, 404, { ok: false, error: "session_missing", message: "That upload is no longer on disk. Start it again." });
+  }
+
+  const expected = Math.ceil(meta.size / meta.chunk);
+  const index = Number(url.searchParams.get("index"));
+  if (!Number.isInteger(index) || index < 0 || index >= expected) {
+    return sendJson(res, 400, { ok: false, error: "bad_index", index, expected });
+  }
+  const declared = Number(req.headers["content-length"] || 0);
+  if (declared > meta.chunk) {
+    req.resume();
+    return sendJson(res, 413, { ok: false, error: "chunk_too_large", max: meta.chunk });
+  }
+
+  const dir = sessionPath(id);
+  const part = join(dir, `${index}.part`);
+  const tmp = `${part}.tmp`;
+  let bytes = 0;
+  try {
+    await new Promise((done, fail) => {
+      const out = createWriteStream(tmp);
+      out.on("error", fail);
+      (async () => {
+        try {
+          for await (const chunk of req) {
+            bytes += chunk.length;
+            if (bytes > meta.chunk) {
+              throw Object.assign(new Error("chunk too large"), { code: "CHUNK_TOO_LARGE" });
+            }
+            if (!out.write(chunk)) await once(out, "drain");
+          }
+          out.end(() => done());
+        } catch (e) {
+          out.destroy();
+          fail(e);
+        }
+      })();
+    });
+  } catch (e) {
+    await unlink(tmp).catch(() => {});
+    if (e.code === "CHUNK_TOO_LARGE") {
+      req.resume();
+      return sendJson(res, 413, { ok: false, error: "chunk_too_large", max: meta.chunk });
+    }
+    throw e;
+  }
+
+  // Everything on disk plus this piece has to fit the size the client declared,
+  // or a session could be used to fill the disk past the file it claims to be.
+  const before = (await sessionParts(id)).filter((p) => p.index !== index);
+  const total = before.reduce((a, p) => a + p.size, 0) + bytes;
+  if (total > meta.size) {
+    await unlink(tmp).catch(() => {});
+    return sendJson(res, 413, { ok: false, error: "too_large", size: meta.size, sent: total });
+  }
+
+  await rename(tmp, part);
+  const view = sessionView(meta, await sessionParts(id));
+  return sendJson(res, 200, { ok: true, ...view });
+}
+
+/** What has arrived so far. Without an id: every session, so the page can offer to resume. */
+async function sessionStatus(res, url) {
+  const id = String(url.searchParams.get("id") || "");
+  if (id) {
+    const meta = await readSession(id);
+    if (!meta) return sendJson(res, 404, { ok: false, error: "session_missing" });
+    return sendJson(res, 200, { ok: true, ...sessionView(meta, await sessionParts(id)) });
+  }
+  const ids = (await readdir(INCOMING).catch(() => [])).filter((n) => SESSION_ID.test(n));
+  const sessions = [];
+  for (const one of ids) {
+    const meta = await readSession(one);
+    if (meta) sessions.push(sessionView(meta, await sessionParts(one)));
+  }
+  return sendJson(res, 200, { ok: true, sessions, chunk: CHUNK_BYTES, max_bytes: MAX_UPLOAD_BYTES });
+}
+
+async function cancelSession(res, url) {
+  const id = String(url.searchParams.get("id") || "");
+  const dir = sessionPath(id);
+  if (!dir) return sendJson(res, 400, { ok: false, error: "bad_id" });
+  await rm(dir, { recursive: true, force: true }).catch(() => {});
+  console.log(`[admin] upload session ${id} discarded`);
+  return sendJson(res, 200, { ok: true, id });
+}
+
+/** Join the pieces into the media folder, then treat it like any other upload. */
+async function finishSession(req, res, url) {
+  const id = String(url.searchParams.get("id") || "");
+  const meta = await readSession(id);
+  if (!meta) return sendJson(res, 404, { ok: false, error: "session_missing" });
+
+  const parts = await sessionParts(id);
+  const expected = Math.ceil(meta.size / meta.chunk);
+  const have = new Set(parts.map((p) => p.index));
+  const missing = [];
+  for (let i = 0; i < expected; i++) if (!have.has(i)) missing.push(i);
+  if (missing.length) {
+    return sendJson(res, 409, { ok: false, error: "incomplete", missing, ...sessionView(meta, parts) });
+  }
+
+  const ext = extname(meta.name).toLowerCase();
+  const stem = uploadStem(meta.title, meta.quality);
+  const file = await freeName(stem, ext);
+  const tmp = join(STORAGE, `.upload-${randomBytes(6).toString("hex")}.part`);
+
+  let bytes = 0;
+  try {
+    await new Promise((done, fail) => {
+      const out = createWriteStream(tmp);
+      out.on("error", fail);
+      (async () => {
+        try {
+          for (let i = 0; i < expected; i++) {
+            for await (const chunk of createReadStream(join(sessionPath(id), `${i}.part`))) {
+              bytes += chunk.length;
+              if (!out.write(chunk)) await once(out, "drain");
+            }
+          }
+          out.end(() => done());
+        } catch (e) {
+          out.destroy();
+          fail(e);
+        }
+      })();
+    });
+  } catch (e) {
+    await unlink(tmp).catch(() => {});
+    throw e;
+  }
+
+  await rename(tmp, join(STORAGE, file));
+  await rm(sessionPath(id), { recursive: true, force: true }).catch(() => {});
+  return finishUpload(res, { file, bytes, original: meta.name, stem });
+}
+
+// ---------------------------------------------------------------------------
+// Admin gate
+//
+// The page is reachable from the internet now that the owner asked for it, so a
+// wrong token must cost something. Eight failures from one address buys a
+// quarter of an hour of silence; a success clears the record.
+// ---------------------------------------------------------------------------
+const ADMIN_MAX_FAILS = 8;
+const ADMIN_LOCK_MS = 15 * 60 * 1000;
+const adminFails = new Map();      // ip -> { n, first, until }
+
+function clientIp(req) {
+  const fwd = String(req.headers["x-forwarded-for"] || "").split(",")[0].trim();
+  return fwd || String(req.socket.remoteAddress || "").replace(/^::ffff:/, "") || "unknown";
+}
+
+function noteAdminFail(ip) {
+  const now = Date.now();
+  const rec = adminFails.get(ip);
+  const fresh = !rec || now - rec.first > ADMIN_LOCK_MS;
+  const n = fresh ? 1 : rec.n + 1;
+  const first = fresh ? now : rec.first;
+  const until = n >= ADMIN_MAX_FAILS ? now + ADMIN_LOCK_MS : 0;
+  if (adminFails.size > 2048) adminFails.delete(adminFails.keys().next().value);
+  adminFails.set(ip, { n, first, until });
+  return { n, until };
 }
 
 async function handleAdmin(req, res, url) {
-  if (!adminTokenOk(req)) return adminDenied(res);
+  const ip = clientIp(req);
+  const seen = adminFails.get(ip);
+  if (seen && seen.until > Date.now()) {
+    res.setHeader("Retry-After", String(Math.ceil((seen.until - Date.now()) / 1000)));
+    return sendJson(res, 429, {
+      ok: false, error: "too_many_attempts",
+      message: "Too many wrong tokens from this address. Try again later.",
+    });
+  }
+  if (!adminTokenOk(req)) {
+    const { n } = noteAdminFail(ip);
+    console.warn(`[admin] refused ${ip} (${n}/${ADMIN_MAX_FAILS}) ${req.method} ${url.pathname}`);
+    return adminDenied(res);
+  }
+  if (seen) adminFails.delete(ip);
+  if (req.method !== "GET") console.log(`[admin] ${ip} ${req.method} ${url.pathname}`);
   try {
     return await adminDispatch(req, res, url);
   } catch (e) {
@@ -2230,6 +2530,14 @@ async function adminDispatch(req, res, url) {
   const p = url.pathname;
 
   if (req.method === "GET" && p === "/api/admin/state") return sendJson(res, 200, await adminState());
+
+  if (p === "/api/admin/upload/session") {
+    if (req.method === "POST") return startSession(req, res);
+    if (req.method === "GET") return sessionStatus(res, url);
+    if (req.method === "DELETE") return cancelSession(res, url);
+  }
+  if (req.method === "POST" && p === "/api/admin/upload/chunk") return receiveChunk(req, res, url);
+  if (req.method === "POST" && p === "/api/admin/upload/finish") return finishSession(req, res, url);
 
   if (req.method === "POST" && p === "/api/admin/upload") return handleUpload(req, res, url);
 
@@ -2401,7 +2709,7 @@ async function handleSite(req, res) {
 
   if (req.method === "OPTIONS") return send(res, 204, "");
 
-  // Path-mounted mirrors: /cdn/<label>/… is handed to the same handler the
+  // Path-mounted mirrors: /cdn/<label>/â€¦ is handed to the same handler the
   // dedicated ports use, with the prefix stripped.
   if (MIRROR_MODE === "path") {
     const mirrored = p.match(/^\/cdn\/([a-z0-9-]+)(\/.*)?$/i);
@@ -2417,9 +2725,11 @@ async function handleSite(req, res) {
   // ---- admin ----------------------------------------------------------------
   // The page itself is served only when admin is configured; without a token
   // every admin path 404s, so an unconfigured deployment does not advertise one.
-  // ADMIN_LOCAL_ONLY additionally hides it from anything that came through the
-  // tunnel - the admin is for the machine hosting the library.
+  // ADMIN_LOCAL_ONLY=1 puts it back to "this machine only". The *link* stays
+  // local either way: a visitor has no use for a login page, and it should not
+  // be advertised on a public catalogue.
   const adminHidden = ADMIN_LOCAL_ONLY && !isLocalRequest(req);
+  const showAdminLink = ADMIN_ON && !adminHidden && isLocalRequest(req);
   if (p === "/admin" || p === "/admin/") {
     if (!ADMIN_ON || adminHidden) return notFoundPage(res, "Not found.");
     pageHits += 1;
@@ -2436,7 +2746,7 @@ async function handleSite(req, res) {
     pageHits += 1;
     // The admin link is injected rather than hard-coded so a deployment without
     // ADMIN_TOKEN does not advertise a page that 404s.
-    const adminLink = ADMIN_ON && !adminHidden
+    const adminLink = showAdminLink
       ? '<a class="site-bar__link" href="/admin">Manage library</a>'
       : "";
     // The hero is the largest thing on the page and it is chosen by script, so
@@ -2525,7 +2835,7 @@ async function handleSite(req, res) {
     if (!data) return notFoundPage(res, `No category with id "${catPage[1]}".`);
 
     pageHits += 1;
-    const adminLink = ADMIN_ON && !adminHidden
+    const adminLink = showAdminLink
       ? '<a class="site-bar__link" href="/admin">Manage library</a>'
       : '<a class="site-bar__link" href="/">Browse all</a>';
     const meta =
@@ -2765,3 +3075,4 @@ console.log(`catalogue       ${(await catalogue()).length} title(s) - add more i
 console.log(ADMIN_ON
   ? `admin           ${shownBase}/admin  (needs the ADMIN_TOKEN header)`
   : "admin           disabled - set ADMIN_TOKEN to add movies from the browser");
+pruneUploadSessions().catch(() => {});

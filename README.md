@@ -74,6 +74,8 @@ Every option is optional; the defaults run a local demo.
 | Variable | Default | Meaning |
 |---|---|---|
 | `ADMIN_TOKEN` | unset | enables `/admin`; unset means every admin route is 404 |
+| `ADMIN_LOCAL_ONLY` | unset | `1` = the admin only answers requests from this machine |
+| `UPLOAD_CHUNK_BYTES` | `33554432` | piece size for resumable uploads (1–64 MB); must stay under the edge's request limit |
 | `PORT` | `8890` | site port |
 | `HOST` | `127.0.0.1` | bind address |
 | `STORAGE_DIR` | `./storage` | media, manifest, posters, token |

@@ -251,6 +251,57 @@ room for the finished file too.
 
 ---
 
+## Admin from another machine (and files over 100 MB)
+
+The admin answers on the public hostname — `https://movies.hafizr283.me/admin` —
+so a film can be added from a phone, a laptop or someone else's machine. The
+token is the only door:
+
+- Every admin route needs `X-Admin-Token`; without the right value it is a 401,
+  and an unset `ADMIN_TOKEN` makes all of them 404.
+- **Eight wrong tokens from one address lock that address out for fifteen
+  minutes** (HTTP 429 with `Retry-After`). A correct token clears the record.
+- The token travels in a header, never in a URL, so it does not land in proxy or
+  server logs.
+- The public catalogue does not advertise the page: the *link* is still only
+  rendered for a request that came from this PC. Bookmark the URL.
+
+Treat the token as a password now that it is the only thing between the internet
+and your library. To close the door again, set `ADMIN_LOCAL_ONLY = "1"` in
+`go-live.ps1`: the page and the API then 404 for anything arriving through the
+tunnel.
+
+### Why uploads arrive in pieces
+
+Cloudflare's free plan refuses a **request body over 100 MB**, at the edge,
+before the request reaches this PC. That is not a setting on our side — the
+server accepts up to 2 GiB — so a single POST of a film was never going to work
+through the tunnel.
+
+The browser therefore cuts the file into **32 MB pieces** (`UPLOAD_CHUNK_BYTES`,
+1–64 MB). Each piece is its own request, comfortably under the edge limit. The
+server writes them to `<storage>/.incoming/<id>/` and joins them only when the
+last one has arrived, then probes the result exactly like a one-request upload.
+
+What that buys:
+
+- **Resume.** Pieces already on the server are listed by `GET
+  /api/admin/upload/session?id=…`, and the page remembers an unfinished upload,
+  so choosing the same file again sends only what is missing.
+- **A dropped connection costs one piece**, retried twice before giving up.
+- **No half-files in the library.** The joined file appears only after the last
+  piece; abandoned sessions are swept after 24 hours.
+- A piece that is too big, or pieces that add up past the declared size, are
+  refused — a session cannot be used to fill the disk.
+
+A film needs room for its pieces **and** the joined file at the same time, so
+budget roughly twice the film's size in free space while it uploads; the pieces
+are deleted the moment the file is joined.
+
+The one-request path still exists for files under 4 MB, where it is simpler.
+
+---
+
 ## Blob storage: taking the films off this PC's uplink
 
 A viewer on the tunnel downloads from **this machine**. On a domestic line the

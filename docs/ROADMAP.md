@@ -43,9 +43,10 @@ which matters at this uplink speed.
 3. **Server-side resume.** Progress lives in `localStorage`, so a film started on
    a phone starts from zero on a TV. A `PUT /api/progress/<id>` keyed by a
    random per-browser id would fix it with one small endpoint.
-4. **Resumable uploads.** A single `PUT` is capped at 5 GiB and has no retry from
-   a browser; block uploads (`Put Block` + `Put Block List`) would let a 30 GB
-   remux survive a dropped connection.
+4. **Resumable publish to Azure.** Arriving pieces can already resume (the admin
+   sends 32 MB at a time and remembers where it stopped), but publishing to Blob
+   is still one `PUT`: a cancel restarts the whole film. `Put Block` + `Put Block
+   List` would make that leg resumable too, which matters at this uplink speed.
 5. **Adaptive bitrate.** The "Auto" switch steps down to the 480p rendition after
    stalls. Two renditions as separate files is not ABR; an HLS playlist per film
    would be, at the cost of segmenting every film once.

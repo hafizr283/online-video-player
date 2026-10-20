@@ -200,7 +200,11 @@ $env:HOST = "127.0.0.1"
 $env:PORT = "$Port"
 $env:MIRROR_MODE = "path"
 $env:ADMIN_TOKEN = $token
-$env:ADMIN_LOCAL_ONLY = "1"
+# The admin answers from anywhere the token is presented, so a film can be added
+# from a phone or another machine; the token is the only door, and eight wrong
+# ones from an address lock it out for fifteen minutes. Set this to "1" to put
+# the admin back to this machine only (the API then 404s for everyone else).
+$env:ADMIN_LOCAL_ONLY = "0"
 Remove-Item Env:PUBLIC_ORIGIN -ErrorAction SilentlyContinue
 Remove-Item Env:DEV_PANEL -ErrorAction SilentlyContinue
 # server.mjs ships demo defaults for these two; they are printed in the source,
