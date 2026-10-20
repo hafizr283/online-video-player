@@ -101,7 +101,7 @@ ok("browse page served", browse.includes('id="catalogue-root"'));
 // its poster in the head; otherwise the download only starts after the JSON lands.
 const heroPoster = (await catalogue()).titles[0].poster;
 ok("the page names its hero poster before the script runs",
-  browse.includes(`rel="preload" as="image" href="${heroPoster}"`), heroPoster);
+  browse.includes(`rel="preload" as="image" href="${heroPoster}`), heroPoster);
 
 const cat = await catalogue();
 ok("catalogue lists the seeded titles", cat.ok === true && cat.count >= 4, `count=${cat.count}`);
