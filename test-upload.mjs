@@ -42,6 +42,7 @@ const app = spawn(NODE, [APP], {
     STORAGE_DIR: storage,
     ADMIN_TOKEN: TOKEN,
     UPLOAD_CHUNK_BYTES: String(CHUNK),
+    MAX_UPLOAD_BYTES: String(1024 ** 4),
     RENDITION_HEIGHT: "0",
   },
   stdio: ["ignore", "pipe", "pipe"],
@@ -134,9 +135,14 @@ try {
   const unknown = await piece("0123456789abcdef", 0, Buffer.from("x"));
   pass(unknown.status === 404, "a made-up session id is not found", `status ${unknown.status}`);
 
-  const big = await start("huge.mp4", 3 * 1024 * 1024 * 1024);
-  pass(big.status === 413 && big.body.error === "too_large", "a file past the library limit is refused up front",
+  const big = await start("huge.mp4", 1024 ** 4 + 1);
+  pass(big.status === 413 && big.body.error === "too_large", "a file past the configured ceiling is refused up front",
     `status ${big.status}`);
+
+  const noRoom = await start("enormous.mp4", 100 * 1024 ** 3);
+  pass(noRoom.status === 507 && noRoom.body.error === "no_space",
+    "a film that will not fit twice is refused before a byte is sent",
+    `status ${noRoom.status}${noRoom.body.message ? ` — ${noRoom.body.message}` : ""}`);
 
   const wrongExt = await start("film.txt", 1024);
   pass(wrongExt.status === 400, "only video containers are accepted", `status ${wrongExt.status}`);

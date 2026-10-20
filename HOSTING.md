@@ -241,7 +241,9 @@ room for the finished file too.
 ### Limits
 
 - The server accepts `.mp4 .mkv .webm .m4v .mov` and caps one file at
-  **2 GiB** (`MAX_UPLOAD_BYTES`).
+  **8 GiB** (`MAX_UPLOAD_BYTES`). That cap is a sanity bound, not the real
+  limit: a film is briefly on disk twice, so an upload that would not fit
+  twice is refused before the first piece with the numbers it needs.
 - File names are generated from the title and quality; the name you upload is
   not used on disk.
 - Deleting a movie **keeps** its video files and lists them as unused. Nothing

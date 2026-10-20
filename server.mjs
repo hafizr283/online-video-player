@@ -1090,6 +1090,20 @@ const VIDEO_EXT = new Set([".mp4", ".mkv", ".webm", ".m4v", ".mov"]);
 
 const exists = async (p) => { try { await stat(p); return true; } catch { return false; } };
 
+/**
+ * How much room an upload needs.
+ *
+ * A film sits on disk twice while it arrives - once as pieces, once joined - so
+ * the question is never "does it fit?" but "does it fit twice?", with a margin
+ * left for the rest of the machine.
+ */
+const UPLOAD_RESERVE = 512 * 1024 * 1024;
+const freeBytes = async () => {
+  const s = await statfs(STORAGE).catch(() => null);
+  return s ? s.bavail * s.bsize : 0;
+};
+const roomFor = (size) => size * 2 + UPLOAD_RESERVE;
+
 // ---------------------------------------------------------------------------
 // Conversion: an upload that no browser can play is turned into H.264/AAC MP4.
 //
@@ -2185,6 +2199,20 @@ async function handleUpload(req, res, url) {
   const stem = uploadStem(url.searchParams.get("title"), url.searchParams.get("quality"));
   const file = await freeName(stem, ext);
 
+  // One request still has to fit on the disk it is streaming to, and refusing
+  // before the first byte is kinder than filling the volume and failing.
+  const declared = Number(req.headers["content-length"] || 0);
+  if (declared) {
+    const free = await freeBytes();
+    if (declared + UPLOAD_RESERVE > free) {
+      req.resume();
+      return sendJson(res, 507, {
+        ok: false, error: "no_space", free_bytes: free,
+        message: `This file needs ${humanSize(declared + UPLOAD_RESERVE)} free; this PC has ${humanSize(free)}.`,
+      });
+    }
+  }
+
   const tmp = join(STORAGE, `.upload-${randomBytes(6).toString("hex")}.part`);
   const out = createWriteStream(tmp);
   let bytes = 0;
@@ -2304,6 +2332,15 @@ async function startSession(req, res) {
   if (!size) return sendJson(res, 400, { ok: false, error: "no_size" });
   if (size > MAX_UPLOAD_BYTES) {
     return sendJson(res, 413, { ok: false, error: "too_large", max_bytes: MAX_UPLOAD_BYTES });
+  }
+  const free = await freeBytes();
+  if (roomFor(size) > free) {
+    return sendJson(res, 507, {
+      ok: false, error: "no_space",
+      needed_bytes: roomFor(size), free_bytes: free,
+      message: `${humanSize(size)} needs about ${humanSize(roomFor(size))} free while it uploads; ` +
+        `this PC has ${humanSize(free)}.`,
+    });
   }
 
   await pruneUploadSessions();

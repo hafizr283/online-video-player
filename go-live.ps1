@@ -200,6 +200,11 @@ $env:HOST = "127.0.0.1"
 $env:PORT = "$Port"
 $env:MIRROR_MODE = "path"
 $env:ADMIN_TOKEN = $token
+# A sanity ceiling for one upload, not the real limit: the server refuses any
+# film that will not fit twice on this disk, because it is briefly on disk as
+# pieces and again as the joined file. 8 GiB leaves room for a 4K remux when
+# there is space for one.
+$env:MAX_UPLOAD_BYTES = "8589934592"
 # The admin answers from anywhere the token is presented, so a film can be added
 # from a phone or another machine; the token is the only door, and eight wrong
 # ones from an address lock it out for fifteen minutes. Set this to "1" to put

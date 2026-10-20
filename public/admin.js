@@ -415,9 +415,9 @@ function uploadWhole(file, { title, quality, progress }) {
       try { data = JSON.parse(xhr.responseText); } catch { /* ignore */ }
       if (xhr.status === 200) resolve(data);
       else if (xhr.status === 401) { lock("That token was not accepted."); reject(new Error("unauthorised")); }
-      else reject(new Error(data.error === "too_large"
+      else reject(new Error(data.message || (data.error === "too_large"
         ? `File is larger than the ${bytes(state.limits.max_upload_bytes)} limit.`
-        : data.error || `HTTP ${xhr.status}`));
+        : data.error || `HTTP ${xhr.status}`)));
     });
     xhr.addEventListener("error", () => reject(new Error("network error")));
     xhr.send(file);
