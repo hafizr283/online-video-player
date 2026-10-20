@@ -117,9 +117,3 @@ node cdp-demo.mjs      # a real browser over CDP: playback, quality switch, admi
   printed, and never reaches a browser — the container is public-read instead.
 - Uploads are capped at 2 GiB by default (`MAX_UPLOAD_BYTES`).
 - This is a personal project, not a service. It ships no media.
-
-## Screenshots
-
-| Catalogue | Player |
-|---|---|
-| ![Catalogue](docs/screenshots/catalogue.png) | ![Player](docs/screenshots/player.png) |

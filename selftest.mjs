@@ -97,6 +97,12 @@ if ((await probe("/api/dev/state")) === 404) {
 const browse = await (await fetch(`${SITE}/`)).text();
 ok("browse page served", browse.includes('id="catalogue-root"'));
 
+// The hero is the largest element and is chosen by script, so the server names
+// its poster in the head; otherwise the download only starts after the JSON lands.
+const heroPoster = (await catalogue()).titles[0].poster;
+ok("the page names its hero poster before the script runs",
+  browse.includes(`rel="preload" as="image" href="${heroPoster}"`), heroPoster);
+
 const cat = await catalogue();
 ok("catalogue lists the seeded titles", cat.ok === true && cat.count >= 4, `count=${cat.count}`);
 ok("catalogue groups titles into rows", cat.rows.length >= 2 && cat.rows.every((r) => r.titles.length),

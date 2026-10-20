@@ -2276,7 +2276,19 @@ async function handleSite(req, res) {
     const adminLink = ADMIN_ON && !adminHidden
       ? '<a class="site-bar__link" href="/admin">Manage library</a>'
       : "";
-    const html = (await readFile(join(PUBLIC, "index.html"), "utf8")).replace("<!--MLBD_ADMIN_LINK-->", adminLink);
+    // The hero is the largest thing on the page and it is chosen by script, so
+    // the browser would otherwise not start fetching it until the catalogue
+    // arrived. Naming it in the head starts the download during HTML parse.
+    let headLinks = "";
+    try {
+      const first = (await catalogueJson()).titles[0];
+      if (first && first.poster) {
+        headLinks = `<link rel="preload" as="image" href="${escapeHtml(first.poster)}" fetchpriority="high">`;
+      }
+    } catch { /* the page still renders; only the hint is lost */ }
+    const html = (await readFile(join(PUBLIC, "index.html"), "utf8"))
+      .replace("<!--MLBD_ADMIN_LINK-->", adminLink)
+      .replace("<!--MLBD_HEAD_LINKS-->", headLinks);
     return page(res, html);
   }
 
@@ -2287,7 +2299,8 @@ async function handleSite(req, res) {
     if (!t) return notFoundPage(res, `No title with id "${movie[1]}".`);
 
     pageHits += 1;
-    const cfg = obfuscate(JSON.stringify(buildConfig(t, req)));
+    const config = buildConfig(t, req);
+    const cfg = obfuscate(JSON.stringify(config));
     const injected =
       `<script id="mlbdInlinePlayerData" type="application/json" data-s="${cfg.seed}" data-r="${cfg.rounds}">` +
       `${cfg.payload}</script>`;
@@ -2307,6 +2320,16 @@ async function handleSite(req, res) {
       ? String(t.description)
       : `${label} - stream it on MovieLinkBD in the quality your connection can hold.`)
       .replace(/\s+/g, " ").trim().slice(0, 200);
+    // A published film lives on another origin. Opening the connection while
+    // the page is still parsing means the player's first range does not wait for
+    // DNS and a TLS handshake.
+    const remoteOrigins = new Set();
+    for (const ep of config.episodes || []) {
+      for (const s of ep.sources || []) {
+        if (!s.remote) continue;
+        try { remoteOrigins.add(new URL(s.url).origin); } catch { /* not a URL */ }
+      }
+    }
     const headMeta = [
       `<meta name="description" content="${escapeHtml(blurb)}">`,
       '<meta property="og:type" content="video.movie">',
@@ -2316,6 +2339,8 @@ async function handleSite(req, res) {
       `<meta property="og:image" content="${escapeHtml(posterAbs)}">`,
       `<meta property="og:url" content="${escapeHtml(`${origin}/movie/${t.id}`)}">`,
       '<meta name="twitter:card" content="summary_large_image">',
+      `<link rel="preload" as="image" href="${escapeHtml(posterAbs)}">`,
+      ...[...remoteOrigins].map((o) => `<link rel="preconnect" href="${escapeHtml(o)}">`),
     ].join("\n");
 
     const html = (await readFile(join(PUBLIC, "movie.html"), "utf8"))
