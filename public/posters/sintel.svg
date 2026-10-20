@@ -1,0 +1,34 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="400" height="600" viewBox="0 0 400 600" role="img" aria-label="Sintel">
+  <defs>
+    <linearGradient id="sky" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#1b3a63"/>
+      <stop offset="0.55" stop-color="#2f5f8c"/>
+      <stop offset="1" stop-color="#0d1520"/>
+    </linearGradient>
+    <linearGradient id="sun" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffd9a0"/>
+      <stop offset="1" stop-color="#e0703a"/>
+    </linearGradient>
+  </defs>
+
+  <rect width="400" height="600" fill="url(#sky)"/>
+  <circle cx="200" cy="300" r="86" fill="url(#sun)" opacity="0.9"/>
+  <circle cx="200" cy="300" r="86" fill="none" stroke="#ffe6c4" stroke-opacity="0.35" stroke-width="2"/>
+
+  <!-- ridges -->
+  <path d="M0 430 L70 388 L128 424 L196 372 L268 428 L330 392 L400 436 L400 600 L0 600 Z" fill="#0e1b2b" opacity="0.95"/>
+  <path d="M0 486 L86 442 L150 482 L232 430 L308 486 L400 448 L400 600 L0 600 Z" fill="#080f18"/>
+
+  <!-- a small walking figure for scale -->
+  <g transform="translate(196 430)">
+    <circle cx="0" cy="-14" r="6" fill="#0a121c"/>
+    <rect x="-4" y="-8" width="8" height="20" rx="3" fill="#0a121c"/>
+  </g>
+
+  <text x="200" y="118" text-anchor="middle" font-family="system-ui, Segoe UI, sans-serif"
+        font-size="46" font-weight="800" letter-spacing="4" fill="#f2f7ff">SINTEL</text>
+  <text x="200" y="146" text-anchor="middle" font-family="system-ui, Segoe UI, sans-serif"
+        font-size="14" letter-spacing="3.5" fill="#cfe0f5" opacity="0.85">DURIAN OPEN MOVIE</text>
+  <text x="200" y="566" text-anchor="middle" font-family="system-ui, Segoe UI, sans-serif"
+        font-size="14" fill="#ffffff99">2010</text>
+</svg>

@@ -1,0 +1,430 @@
+/**
+ * Catalogue skin: a dark, Netflix-shaped browse page plus the "more titles"
+ * row that sits under the player. Deliberately independent of the player's own
+ * stylesheet so the player can be dropped onto any page.
+ */
+:root {
+  --bg: #0b0b0f;
+  --bg-soft: #14141c;
+  --line: #262633;
+  --text: #ececf1;
+  --muted: #9a9aad;
+  --accent: #ff2d55;
+  --radius: 10px;
+}
+
+* { box-sizing: border-box; }
+
+body.browse,
+body.detail,
+body.admin {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font: 15px/1.55 system-ui, -apple-system, "Segoe UI", sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+a { color: inherit; text-decoration: none; }
+
+/* ---- top bar -------------------------------------------------------------- */
+.site-bar {
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  padding: 14px 24px;
+  background: linear-gradient(180deg, rgba(11, 11, 15, .96), rgba(11, 11, 15, .72));
+  backdrop-filter: blur(8px);
+  border-bottom: 1px solid var(--line);
+}
+
+.site-bar__logo {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 8px;
+  font-weight: 800;
+  letter-spacing: .2px;
+}
+
+.site-bar__logo b { color: var(--accent); }
+
+.site-bar__tag {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--muted);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 2px 9px;
+}
+
+.site-bar__spacer { flex: 1; }
+
+.site-bar__note { font-size: 12px; color: var(--muted); }
+
+.site-bar__link {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 5px 14px;
+  background: var(--bg-soft);
+}
+
+.site-bar__link:hover { border-color: #3d3d52; background: #1c1c26; }
+
+/* ---- category chips ------------------------------------------------------- */
+.chipbar {
+  display: flex;
+  gap: 8px;
+  overflow-x: auto;
+  padding: 18px 24px 4px;
+  scrollbar-width: none;
+}
+
+.chipbar::-webkit-scrollbar { display: none; }
+
+.chipbar .chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+  color: var(--text);
+}
+
+.chipbar .chip:hover { border-color: #3d3d52; }
+
+.chip.is-active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+
+.chip__n {
+  font-size: 10.5px;
+  color: var(--muted);
+  border-left: 1px solid currentColor;
+  padding-left: 6px;
+  opacity: .8;
+}
+
+.chip.is-active .chip__n { color: #fff; }
+
+.chip--cat { color: var(--text); border-color: #3d3d52; }
+.chip--cat:hover { border-color: var(--accent); color: #fff; }
+
+.row__more {
+  font-size: 12.5px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.row__more:hover { color: var(--text); }
+
+/* ---- category page -------------------------------------------------------- */
+.cat-head {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  padding: 22px 24px 0;
+}
+
+.cat-head h1 { margin: 0; font-size: clamp(1.4rem, 2.6vw, 2rem); }
+
+.cat-desc { margin: 6px 24px 0; color: var(--muted); max-width: 78ch; }
+
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 18px 14px;
+  padding: 20px 24px 60px;
+}
+
+@media (max-width: 760px) {
+  .grid { grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); }
+}
+
+/* ---- hero ----------------------------------------------------------------- */
+.hero {
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 260px;
+  gap: 32px;
+  align-items: center;
+  padding: 44px 24px 38px;
+  border-bottom: 1px solid var(--line);
+  background:
+    radial-gradient(1000px 420px at 8% -20%, rgba(255, 45, 85, .22), transparent 70%),
+    linear-gradient(180deg, #14141c, #0b0b0f);
+}
+
+.hero__eyebrow {
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: .16em;
+  text-transform: uppercase;
+  color: var(--accent);
+}
+
+.hero h1 {
+  margin: 8px 0 10px;
+  font-size: clamp(1.7rem, 3.4vw, 2.6rem);
+  line-height: 1.12;
+}
+
+.hero__meta { color: var(--muted); font-size: 13px; margin-bottom: 12px; }
+
+.hero p { margin: 0 0 20px; max-width: 62ch; color: #d3d3de; }
+
+.hero__actions { display: flex; gap: 10px; flex-wrap: wrap; }
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 18px;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+  background: var(--bg-soft);
+  color: var(--text);
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.btn:hover { border-color: #3a3a4d; }
+
+.btn--primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+.btn--primary:hover { filter: brightness(1.08); }
+
+.hero__art {
+  justify-self: center;
+  width: 100%;
+  max-width: 260px;
+  border-radius: var(--radius);
+  overflow: hidden;
+  box-shadow: 0 24px 60px rgba(0, 0, 0, .55);
+}
+
+.hero__art img { display: block; width: 100%; height: auto; aspect-ratio: 2 / 3; object-fit: cover; }
+
+/* ---- rows ----------------------------------------------------------------- */
+.row { padding: 26px 0 6px; }
+
+.row__head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 0 24px 12px;
+}
+
+.row__head h2 { margin: 0; font-size: 1.05rem; letter-spacing: .01em; }
+
+.row__count { font-size: 12px; color: var(--muted); }
+
+.row__spacer { flex: 1; }
+
+.row__nav {
+  display: flex;
+  gap: 6px;
+}
+
+.row__nav button {
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  border: 1px solid var(--line);
+  background: var(--bg-soft);
+  color: var(--text);
+  cursor: pointer;
+  font-size: 15px;
+  line-height: 1;
+}
+
+.row__nav button:hover { border-color: #3a3a4d; background: #1c1c26; }
+
+.row__track {
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: 172px;
+  gap: 14px;
+  overflow-x: auto;
+  scroll-behavior: smooth;
+  scroll-snap-type: x proximity;
+  padding: 4px 24px 20px;
+  scrollbar-width: none;
+  /* without this the grid stretches each card to the tallest, which in turn
+     stretches the poster box and crops the artwork sideways */
+  align-items: start;
+}
+
+.row__track::-webkit-scrollbar { display: none; }
+
+/* ---- card ----------------------------------------------------------------- */
+.card {
+  scroll-snap-align: start;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.card__art {
+  position: relative;
+  border-radius: var(--radius);
+  overflow: hidden;
+  border: 1px solid var(--line);
+  background: #17171f;
+  transition: transform .18s ease, box-shadow .18s ease, border-color .18s ease;
+}
+
+.card__art img { display: block; width: 100%; height: auto; aspect-ratio: 2 / 3; object-fit: cover; }
+
+.card:hover .card__art,
+.card:focus-visible .card__art {
+  transform: translateY(-4px) scale(1.03);
+  box-shadow: 0 16px 34px rgba(0, 0, 0, .6);
+  border-color: #3d3d52;
+}
+
+/* A play button over the art on hover: the whole card is a link, and this says
+   so without a caption. */
+.card__art::after {
+  content: "\25B6";
+  position: absolute;
+  left: 50%; top: 50%;
+  width: 44px; height: 44px;
+  display: grid; place-items: center;
+  border-radius: 50%;
+  background: rgba(8, 8, 12, .62);
+  border: 1px solid rgba(255, 255, 255, .3);
+  color: #fff;
+  font-size: 14px;
+  padding-left: 3px;
+  opacity: 0;
+  transform: translate(-50%, -50%) scale(.86);
+  transition: opacity .18s ease, transform .18s ease;
+  pointer-events: none;
+}
+.card:hover .card__art::after,
+.card:focus-visible .card__art::after {
+  opacity: 1;
+  transform: translate(-50%, -50%) scale(1);
+}
+
+.card__badge {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  padding: 2px 7px;
+  border-radius: 5px;
+  background: rgba(8, 8, 12, .78);
+  border: 1px solid rgba(255, 255, 255, .16);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: .02em;
+}
+
+.card__badge[hidden] { display: none; }
+
+/* How much of a title is behind you, at the foot of the artwork - the place
+   every streaming shelf puts it. */
+.card__progress {
+  position: absolute;
+  left: 0; right: 0; bottom: 0;
+  height: 4px;
+  background: rgba(6, 8, 14, .72);
+}
+.card__progress > span {
+  display: block;
+  height: 100%;
+  background: linear-gradient(90deg, #ffb347, var(--accent));
+  border-radius: 0 2px 2px 0;
+  box-shadow: 0 0 10px rgba(255, 45, 85, .45);
+}
+
+.row--resume .row__head h2::before {
+  content: "\25B6";
+  color: var(--accent);
+  font-size: 11px;
+  margin-right: 8px;
+  vertical-align: 2px;
+}
+
+.card__title { font-size: 13.5px; font-weight: 600; }
+
+.card__meta { font-size: 11.5px; color: var(--muted); }
+
+/* ---- detail page ---------------------------------------------------------- */
+.detail-wrap { max-width: 1080px; margin: 0 auto; padding: 22px 24px 60px; }
+
+.detail-back { display: inline-block; margin-bottom: 14px; color: var(--muted); font-size: 13px; }
+.detail-back:hover { color: var(--text); }
+
+.title-meta { margin-top: 22px; }
+
+.title-meta h1 { margin: 0 0 8px; font-size: 1.5rem; }
+
+.title-meta__line { color: var(--muted); font-size: 13px; margin-bottom: 12px; }
+
+.title-meta p { margin: 0 0 14px; max-width: 78ch; color: #d3d3de; }
+
+.chips { display: flex; flex-wrap: wrap; gap: 8px; }
+
+.chip {
+  font-size: 12px;
+  padding: 3px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: var(--bg-soft);
+  color: var(--muted);
+}
+
+.chip--q { color: var(--text); border-color: #3d3d52; }
+
+.loading,
+.empty { padding: 40px 24px; color: var(--muted); }
+
+/* ---- footer --------------------------------------------------------------- */
+.site-foot {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 18px;
+  justify-content: space-between;
+  padding: 26px 24px 40px;
+  margin-top: 12px;
+  border-top: 1px solid var(--line);
+  color: var(--muted);
+  font-size: 12px;
+}
+
+@media (max-width: 760px) {
+  .hero { grid-template-columns: 1fr; }
+  .hero__art { max-width: 190px; justify-self: start; }
+  .row__track { grid-auto-columns: 140px; }
+}
+
+/* Keyboard users get the same affordance as a pointer, on every control. */
+.card:focus-visible,
+.hero__art:focus-visible,
+.btn:focus-visible,
+.chip:focus-visible,
+.row__more:focus-visible,
+.row__nav button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+  border-radius: 8px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: .001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: .001ms !important;
+  }
+  .card:hover .card__art,
+  .card:focus-visible .card__art { transform: none; }
+  .row__track { scroll-behavior: auto; }
+}

@@ -1,0 +1,15 @@
+WEBVTT
+
+NOTE Demo subtitle track. The real player loads these from its own subtitle list.
+
+1
+00:00:00.500 --> 00:00:03.500
+Subtitle track loaded from /subs/demo.vtt
+
+2
+00:00:03.500 --> 00:00:06.500
+The config arrived obfuscated: base64 XOR an LCG keystream.
+
+3
+00:00:06.500 --> 00:00:09.000
+The stream URL carries a CDN-minted ?mg= token.

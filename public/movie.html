@@ -1,0 +1,114 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#0b0b0f">
+<title><!--MLBD_TITLE--> - MovieLinkBD</title>
+<!--MLBD_HEAD_META-->
+<link rel="stylesheet" href="/style/catalogue.css">
+<link rel="stylesheet" href="/style/mlbd-details-player.css">
+</head>
+<body class="detail">
+
+<header class="site-bar">
+  <a class="site-bar__logo" href="/"><b>Movie</b>LinkBD</a>
+  <span class="site-bar__tag">Movies</span>
+  <span class="site-bar__spacer"></span>
+  <a class="site-bar__link" href="/">Browse all</a>
+</header>
+
+<main class="detail-wrap">
+
+  <a class="detail-back" href="/">&#8249; All titles</a>
+
+  <!-- The server replaces these markers with the page's own player data. -->
+  <!--MLBD_PLAYER_CONFIG-->
+  <!--MLBD_TITLE_META-->
+
+  <section id="mlbdInlinePlayer" class="mlbd-inline-player no-click-ad is-tall-poster" aria-label="Video player">
+    <div class="mlbd-inline-player__head">
+      <div class="mlbd-inline-player__head-left">
+        <span class="mlbd-inline-player__eyebrow">Now playing</span>
+        <strong class="mlbd-inline-player__heading"><!--MLBD_TITLE--></strong>
+      </div>
+      <span class="mlbd-inline-player__status">Loading</span>
+    </div>
+
+    <div class="mlbd-inline-player__stage">
+      <div class="mlbd-inline-player__art"></div>
+    </div>
+
+    <div class="mlbd-inline-player__notice" role="status" aria-live="polite"></div>
+
+    <div class="mlbd-inline-player__foot">
+      <span class="mlbd-inline-player__gate-note">—</span>
+      <span class="mlbd-inline-player__hint">Quality and audio menus · Space to play or pause · Arrow keys to seek</span>
+    </div>
+  </section>
+
+  <section class="title-meta" id="title-meta-root" aria-label="About this title"></section>
+
+  <div id="more-titles"></div>
+
+  <!--MLBD_DEV_PANEL_START-->
+  <section class="dev-panel">
+    <h2>Test panel <span class="tag warn">developer build only</span></h2>
+    <p class="dev-note">
+      The source rows are built from whatever this title actually ships, so the panel works on every
+      title in the library, not just the one it was written against. Watch the <em>Counters</em> box:
+      after a forced gate failure <code>reloadAvoided</code> increments and the page does
+      <strong>not</strong> reload — that is the fix. The original reloaded the document here.
+    </p>
+
+    <div class="dev-grid">
+      <div class="dev-group">
+        <h3>Inspect</h3>
+        <button data-dev="meta">Config meta (seed / rounds / host)</button>
+        <button data-dev="config">Decoded config keys</button>
+        <button data-dev="sources">Sources + scores + health</button>
+        <button data-dev="current">Current source</button>
+        <button data-dev="counters">Counters</button>
+        <button data-dev="server">Server state (all titles)</button>
+      </div>
+
+      <div class="dev-group">
+        <h3>Transport</h3>
+        <button data-dev="seek">Seek +10s</button>
+        <button data-dev="clear-pref">Clear saved quality preference</button>
+        <button data-dev="reload-page">Reload page</button>
+      </div>
+
+      <div class="dev-group">
+        <h3>Gate token</h3>
+        <button data-dev="expire">Invalidate all issued tokens (server)</button>
+        <button data-dev="force-error">Force a media error (stale mg= URL)</button>
+        <button data-dev="hard-expire">Hard test: expire token, then force error</button>
+        <button data-dev="reset-gate">Reset gate epoch + recovery flag</button>
+      </div>
+
+      <div class="dev-group">
+        <h3>Server faults</h3>
+        <button data-dev="toggle-cdn">Toggle broken mirror C</button>
+        <button data-dev="mark-default-bad">Mark this title's 720p "no audio" ×2</button>
+        <button data-dev="heal">Heal all health records</button>
+      </div>
+
+      <div class="dev-group dev-group--wide" id="dev-sources">
+        <h3>Sources of this title</h3>
+        <p class="dev-hint">Built live from the decoded config — no hardcoded source ids.</p>
+      </div>
+    </div>
+
+    <pre id="dev-out" class="dev-out">ready.</pre>
+  </section>
+  <!--MLBD_DEV_PANEL_END-->
+
+</main>
+
+<script src="/vendor/artplayer.legacy.js"></script>
+<script type="module" src="/style/mlbd-details-player.js"></script>
+<script src="/devtools.js"></script>
+<script type="module" src="/catalogue.js"></script>
+</body>
+</html>

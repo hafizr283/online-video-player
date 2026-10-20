@@ -1,0 +1,162 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<meta name="theme-color" content="#0b0b0f">
+<title>Manage library — MovieLinkBD</title>
+<link rel="stylesheet" href="/style/catalogue.css">
+<link rel="stylesheet" href="/style/admin.css">
+</head>
+<body class="admin">
+
+<header class="site-bar">
+  <a class="site-bar__logo" href="/"><b>Movie</b>LinkBD</a>
+  <span class="site-bar__tag">Admin</span>
+  <span class="site-bar__spacer"></span>
+  <a class="site-bar__link" href="/">View site</a>
+</header>
+
+<!-- Gate: the token is held in sessionStorage and sent as a header, never in a
+     URL, so it does not end up in access logs or browser history. -->
+<section id="gate" class="admin-gate">
+  <h1>Administrator access</h1>
+  <p>
+    This library is protected. Enter the admin token to manage titles and media.
+    The token is kept in this tab only and is sent as a request header.
+  </p>
+  <form id="gate-form" class="admin-gate__form">
+    <input id="gate-token" type="password" autocomplete="off" placeholder="Admin token" aria-label="Admin token" required>
+    <button class="btn btn--primary" type="submit">Sign in</button>
+  </form>
+  <p id="gate-err" class="admin-err" hidden></p>
+</section>
+
+<main id="app" class="admin-wrap" hidden>
+
+  <div class="admin-head">
+    <div>
+      <h1 id="app-title">Library</h1>
+      <p class="admin-sub" id="app-sub">Loading…</p>
+    </div>
+    <div class="admin-actions">
+      <button class="btn" type="button" id="refresh">Refresh</button>
+      <button class="btn btn--primary" type="button" id="new">Add movie</button>
+    </div>
+  </div>
+
+  <!-- Editor -->
+  <section id="editor" class="admin-card" hidden>
+    <div class="admin-card__head">
+      <h2 id="editor-title">Add movie</h2>
+      <button class="btn btn--ghost" type="button" id="cancel">Cancel</button>
+    </div>
+
+    <form id="movie-form" class="admin-form" autocomplete="off">
+      <input type="hidden" id="f-original-id">
+      <input type="hidden" id="f-key">
+
+      <div class="admin-grid">
+        <label class="field">
+          <span>Title *</span>
+          <input id="f-title" type="text" required maxlength="200" placeholder="Movie title">
+        </label>
+
+        <label class="field">
+          <span>Id <em>(url: /movie/…)</em></span>
+          <input id="f-id" type="text" maxlength="60" placeholder="Generated from the title">
+        </label>
+
+        <label class="field">
+          <span>Year</span>
+          <input id="f-year" type="number" min="1880" max="2100" placeholder="2026">
+        </label>
+
+        <label class="field">
+          <span>Poster path <em>(optional)</em></span>
+          <input id="f-poster" type="text" placeholder="Artwork is generated when blank">
+          <img id="poster-preview" class="poster-preview" alt="" hidden>
+        </label>
+      </div>
+
+      <label class="field">
+        <span>Description</span>
+        <textarea id="f-description" rows="3" placeholder="Shown on the watch page and in the featured slot."></textarea>
+      </label>
+
+      <label class="field">
+        <span>Tags <em>(comma separated)</em></span>
+        <input id="f-tags" type="text" placeholder="Hindi, Drama">
+      </label>
+
+      <fieldset class="field">
+        <legend>Categories</legend>
+        <div id="cat-picker" class="cat-picker"></div>
+        <div class="cat-new">
+          <input id="f-new-cat" type="text" placeholder="New category name" maxlength="60">
+          <button class="btn btn--ghost" type="button" id="add-cat">Add category</button>
+        </div>
+      </fieldset>
+
+      <fieldset class="field">
+        <legend>Sources *</legend>
+        <p class="hint">
+          Upload a file or choose one already in the media folder. Add one row per quality or mirror.
+        </p>
+
+        <div id="upload-zone" class="upload-zone">
+          <input id="upload-file" type="file" accept="video/*,.mkv" hidden>
+          <p><strong>Drop a video here</strong> or <button class="linkbtn" type="button" id="browse-file">choose a file</button></p>
+          <p class="hint" id="upload-hint">MP4 (H.264 + AAC) plays in every browser. Files are stored under a generated name.</p>
+          <progress id="upload-progress" max="100" value="0" hidden></progress>
+          <button class="linkbtn" type="button" id="cancel-convert" hidden>Cancel conversion</button>
+        </div>
+
+        <div class="src-table" id="src-rows"></div>
+        <button class="btn btn--ghost" type="button" id="add-src">Add a source row</button>
+      </fieldset>
+
+      <p id="form-err" class="admin-err" hidden></p>
+
+      <div class="admin-form__actions">
+        <button class="btn btn--primary" type="submit" id="save">Save movie</button>
+        <span class="hint" id="save-hint"></span>
+      </div>
+    </form>
+  </section>
+
+  <!-- Diagnostics -->
+  <section id="diag" class="admin-card" hidden>
+    <div class="admin-card__head"><h2>Library health</h2></div>
+    <div id="diag-body" class="diag-body"></div>
+  </section>
+
+  <!-- Titles -->
+  <section class="admin-card">
+    <div class="admin-card__head">
+      <h2>Movies</h2>
+      <span class="hint" id="count-hint"></span>
+    </div>
+    <div id="titles" class="admin-titles"></div>
+  </section>
+
+  <!-- Files -->
+  <section class="admin-card">
+    <div class="admin-card__head">
+      <h2>Media files</h2>
+      <span class="hint" id="orphan-hint"></span>
+    </div>
+    <p class="hint" id="azure-hint" hidden></p>
+    <p class="hint" id="azure-progress-text" hidden></p>
+    <progress id="azure-progress" max="100" value="0" hidden></progress>
+    <div id="files" class="admin-files"></div>
+  </section>
+
+</main>
+
+<div id="toast" class="toast" role="status" aria-live="polite"></div>
+
+<script type="module" src="/admin.js"></script>
+</body>
+</html>

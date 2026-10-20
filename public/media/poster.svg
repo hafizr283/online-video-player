@@ -1,0 +1,38 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 600" width="400" height="600" role="img" aria-label="Demo Feature">
+  <!-- Portrait boxart: a poster is 2:3 so the same file works as a catalogue
+       card and as the player's poster (the config calls this poster_kind:
+       "portrait"). A landscape still would be cropped to pieces in a card. -->
+  <defs>
+    <linearGradient id="sky" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#12224d"/>
+      <stop offset="55%" stop-color="#0b1530"/>
+      <stop offset="100%" stop-color="#060a15"/>
+    </linearGradient>
+    <radialGradient id="sun" cx="72%" cy="24%" r="46%">
+      <stop offset="0%" stop-color="#38bdf8" stop-opacity=".5"/>
+      <stop offset="100%" stop-color="#38bdf8" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+
+  <rect width="400" height="600" fill="url(#sky)"/>
+  <rect width="400" height="600" fill="url(#sun)"/>
+
+  <g fill="#0a1124" opacity=".92">
+    <path d="M0 452 L64 404 L120 442 L178 396 L244 448 L306 402 L400 456 L400 600 L0 600 Z"/>
+  </g>
+  <g fill="#0e1730">
+    <path d="M0 512 L74 468 L146 514 L224 466 L300 516 L400 470 L400 600 L0 600 Z"/>
+  </g>
+
+  <g transform="translate(200 250)">
+    <circle r="62" fill="none" stroke="#38bdf8" stroke-width="3" opacity=".55"/>
+    <path d="M-19 -29 L42 0 L-19 29 Z" fill="#38bdf8" opacity=".9"/>
+  </g>
+
+  <g text-anchor="middle" font-family="system-ui, Segoe UI, Roboto, sans-serif">
+    <text x="200" y="372" fill="#e6ecff" font-size="34" font-weight="700">Demo Feature</text>
+    <text x="200" y="406" fill="#93a1c4" font-size="15">Sample title</text>
+    <text x="200" y="432" fill="#93a1c4" font-size="15">Three mirrors</text>
+    <text x="200" y="482" fill="#38bdf8" font-size="12" letter-spacing="2">2026 · 1080p · 720p · 360p</text>
+  </g>
+</svg>
