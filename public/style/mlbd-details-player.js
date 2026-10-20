@@ -171,7 +171,15 @@ function notice(message, { type = "warning", timeout = 5200 } = {}) {
   el.className = "mlbd-inline-player__notice is-visible " + (type === "error" ? "is-error" : "is-warning");
   noticeTimer = setTimeout(() => { el.className = "mlbd-inline-player__notice"; el.textContent = ""; }, timeout);
 }
-const setStatus = (text) => { const el = statusEl(); if (el) el.textContent = String(text); };
+// The pill is for something happening or something wrong. "Ready" and
+// "Playing" describe a player that is simply working, so they say nothing.
+const QUIET_STATUS = new Set(["Ready", "Playing"]);
+const setStatus = (text) => {
+  const el = statusEl();
+  if (!el) return;
+  el.textContent = String(text);
+  el.hidden = QUIET_STATUS.has(String(text));
+};
 
 /**
  * GET https://<host>/g — no credentials, exactly like the original. Concurrent
@@ -691,9 +699,13 @@ function mountSource(source, opts = {}) {
   return true;
 }
 
+/**
+ * What is on screen, and nothing else. The old line ended in "1 hour access",
+ * which read like a sales pitch and was never quite true.
+ */
 function applyUrl(source) {
   const el = $(".mlbd-inline-player__gate-note", section);
-  if (el) el.textContent = `${source.quality}p • ${source.provider || "CDN"} • 1 hour access`;
+  if (el) el.textContent = `${source.quality}p \u00b7 ${source.provider || "CDN"}`;
 }
 
 /**
@@ -746,19 +758,42 @@ function qualityOptions() {
     .sort((a, b) => (Number(b.quality) || 0) - (Number(a.quality) || 0) || score(b) - score(a));
 }
 
+/**
+ * The quality list, with the one that is playing marked.
+ *
+ * The bundled build fails its own option check for `active` on selector items,
+ * so that flag rendered nothing at all. The mark is part of each item's html
+ * instead: a tick that keeps its column when hidden, in a class this skin
+ * colours. One builder for both callers, so the open panel and a later refresh
+ * cannot disagree.
+ */
+function qualitySelectorFor(current, auto) {
+  const tick = (on) => `<span class="mlbd-q-tick${on ? "" : " is-off"}" aria-hidden="true">&#10003;</span>`;
+  // With Auto on, the useful fact is not "Auto" but the resolution Auto settled
+  // on; with it off, the tick on the playing row says it already.
+  const now = Number(current && current.quality) > 0 ? `(${Number(current.quality)}p)` : "";
+  return [
+    { html: `${tick(auto)}Auto <small>${auto && now ? now : "adaptive"}</small>`, value: "auto" },
+    ...qualityOptions().map((s) => {
+      const playing = Boolean(current) && !auto && s.id === current.id;
+      return {
+        html: `${tick(playing)}${s.quality}p${s.is_best ? " <small>Best</small>" : ""}` +
+          `${isUnusable(s) ? " <small>no audio</small>" : ""}` +
+          `${s.id.endsWith("-c") ? " <small>broken mirror</small>" : ""}`,
+        value: s.id,
+      };
+    }),
+  ];
+}
+
+/** The closed row says which quality is on, so the panel is not the only place to look. */
+const qualityLabel = (current) => (Number(current && current.quality) > 0
+  ? `Quality <small>${Number(current.quality)}p</small>`
+  : "Quality");
+
 let menusBuilt = null;
 function buildMenus(art, current) {
-  const q = qualityOptions();
-  const qualitySelector = [
-    { html: "Auto <small>adaptive</small>", value: "auto", active: state.autoQuality },
-    ...q.map((s) => ({
-      html: `${s.quality}p${s.is_best ? " <small>Best</small>" : ""}` +
-        `${isUnusable(s) ? " <small>(no audio)</small>" : ""}` +
-        `${s.id.endsWith("-c") ? " <small>(broken mirror)</small>" : ""}`,
-      value: s.id,
-      active: !state.autoQuality && s.id === current.id,
-    })),
-  ];
+  const qualitySelector = qualitySelectorFor(current, state.autoQuality);
 
   const audioLangs = [...new Set(state.sources.map((s) => String(s.audio || "").trim()).filter(Boolean))];
   const audioSelector = audioLangs.map((lang) => ({
@@ -770,7 +805,7 @@ function buildMenus(art, current) {
   try {
     art.setting.add({
       name: "quality",
-      html: "Quality",
+      html: qualityLabel(current),
       width: 220,
       selector: qualitySelector,
       onSelect(item) {
@@ -813,10 +848,11 @@ function refreshQualityMenu() {
   const art = state.art;
   if (!art || !menusBuilt || !state.source) return;
   try {
-    art.setting.update({ name: "quality", selector: menusBuilt.qualitySelector.map((o) => ({
-      ...o,
-      active: o.value === "auto" ? state.autoQuality : (!state.autoQuality && o.value === state.source.id),
-    })) });
+    art.setting.update({
+      name: "quality",
+      html: qualityLabel(state.source),
+      selector: qualitySelectorFor(state.source, state.autoQuality),
+    });
   } catch { /* ignore */ }
 }
 

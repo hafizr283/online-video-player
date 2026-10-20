@@ -40,6 +40,8 @@
   font-size: 12px; color: var(--mlbd-muted); border: 1px solid var(--mlbd-line);
   padding: 3px 10px; border-radius: 999px; white-space: nowrap;
 }
+/* A working player needs no label; only buffering and failures show. */
+.mlbd-inline-player__status[hidden] { display: none; }
 
 .mlbd-inline-player__stage { background: #06090f; position: relative; }
 .mlbd-inline-player__art { width: 100%; aspect-ratio: 16 / 9; }
@@ -157,6 +159,24 @@
 /* ---------- ArtPlayer tweaks ---------- */
 .art-video-player { background: #000; }
 .art-video-player .art-notice { font-size: 13px; }
+
+/* The quality list. The tick marks what is playing; the bundled build does not
+   understand ArtPlayer's `active` flag on selector items, so the mark is part
+   of the item's markup rather than its state. Hidden ticks keep their column so
+   the labels stay aligned. */
+.mlbd-inline-player .art-setting-panel .mlbd-q-tick {
+  display: inline-block; width: 15px; margin-right: 7px;
+  color: var(--mlbd-accent); font-weight: 700;
+}
+.mlbd-inline-player .art-setting-panel .mlbd-q-tick.is-off { visibility: hidden; }
+.mlbd-inline-player .art-setting-panel .art-setting-item:has(.mlbd-q-tick:not(.is-off)),
+.mlbd-inline-player .art-setting-panel .art-selector-item:has(.mlbd-q-tick:not(.is-off)) {
+  color: #eef7ff;
+  background: rgba(56, 189, 248, .13);
+}
+.mlbd-inline-player .art-setting-panel small {
+  margin-left: 6px; color: var(--mlbd-muted); font-size: 11px;
+}
 
 /* The config declares poster_kind: "portrait", so boxart is 2:3 while the stage
    is 16:9. ArtPlayer's own rule is background-size: cover, which reduces a
