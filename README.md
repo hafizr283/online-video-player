@@ -17,7 +17,8 @@ connections.
 | **Watch** | Remembers the position, hold to play at 2×, keyboard shortcuts, fullscreen/PiP, and a quality menu that steps down to 480p by itself after repeated stalls. |
 | **Add** | Drag a file into `/admin`. The server identifies it (container, codec, audio), takes a poster frame from the film, and tells you plainly when a browser will not play it. |
 | **Convert** | HEVC, Matroska, AC-3 and friends are re-encoded to H.264/AAC — or remuxed untouched when only the container is the problem. A 480p rendition is made beside every conversion. |
-| **Publish** | Optionally send a film to Azure Blob storage and let viewers stream it from Microsoft's edge instead of your uplink. |
+| **Publish** | Optionally send a film to Azure Blob storage and let viewers stream it from Microsoft's edge instead of your uplink. Saving a film with local files starts that upload on its own and shows its progress. |
+| **Count** | One anonymous view per film per browser after five seconds of playback, shown on the cards and the watch page. No accounts, no cookies, no third-party analytics. |
 | **Depend on nothing** | Zero npm dependencies. Node's standard library for the server, the encoder, and the Blob client. |
 
 ![The player](docs/screenshots/player.png)
@@ -53,6 +54,7 @@ admin just reports that it cannot repair an unplayable file.
 ```
 <storage>/                 videos, library.json, posters, the admin token
   library.json             the catalogue: plain JSON, edited by the admin
+  stats.json               anonymous view counts, rewritten in batches
   posters/                 poster frames taken from each film
 public/                    the web root only
 ```
@@ -110,11 +112,13 @@ fail every request.
 ```bash
 node selftest.mjs      # server contract: catalogue, gate, ranges, admin, conversion plans
 node test-azure.mjs    # the Blob publish path against a mock container
+node test-views.mjs    # view counting rules against a throwaway library
 node cdp-demo.mjs      # a real browser over CDP: playback, quality switch, admin flow
 ```
 
 `selftest.mjs` needs the server started with `DEV_PANEL=1` and the same
-`ADMIN_TOKEN`; `test-azure.mjs` needs no Azure account and no network.
+`ADMIN_TOKEN`; `test-azure.mjs` and `test-views.mjs` start their own server, need
+no Azure account and no network.
 
 ## Notes
 

@@ -13,8 +13,25 @@ const esc = (s) =>
   String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 
 const qualitiesLabel = (t) => (t.qualities || []).map((q) => `${q}p`).join(" · ");
-const metaLine = (t) => [t.year, qualitiesLabel(t), `${t.source_count} source${t.source_count === 1 ? "" : "s"}`]
-  .filter(Boolean).join(" · ");
+
+/** 950 stays 950; 12,400 becomes 12K; 1,240,000 becomes 1.2M. */
+const compactCount = (n) => {
+  const v = Number(n) || 0;
+  if (v < 1000) return String(v);
+  if (v < 1000000) return `${(v / 1000).toFixed(v < 10000 ? 1 : 0).replace(/\.0$/, "")}K`;
+  return `${(v / 1000000).toFixed(1).replace(/\.0$/, "")}M`;
+};
+
+const viewsLabel = (t) => (Number(t.views) > 0
+  ? `${compactCount(t.views)} view${Number(t.views) === 1 ? "" : "s"}`
+  : "");
+
+const metaLine = (t) => [
+  t.year,
+  qualitiesLabel(t),
+  `${t.source_count} source${t.source_count === 1 ? "" : "s"}`,
+  viewsLabel(t),
+].filter(Boolean).join(" · ");
 
 // ---------------------------------------------------------------------------
 // Where this browser stopped watching

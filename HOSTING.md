@@ -351,10 +351,18 @@ never reaches a browser.
 
 ### Publishing a film
 
-Admin (`http://127.0.0.1:8890/admin`) → the film's row → **Send film to Azure**.
+**Saving a film that still has local files starts the upload on its own.** The
+editor has a switch — *Send to Azure after saving* — on by default; with it on,
+the transfer begins as soon as the movie is saved and a fixed panel shows the
+file, percent, speed and time left. Films saved while another transfer runs wait
+their turn and go one after the other.
+
+The manual path is still there: Admin → the film's row → **Send film to Azure**.
 That sends **every file the title lists** — the master and its 480p rendition — in
 one job, because publishing half a film leaves the quality switch pointing back
-at this PC. A single file can still be sent on its own from **Media files**.
+at this PC. An automatic send is smarter: it uploads only what is not published
+yet, so editing an old film never re-sends gigabytes that are already in Blob
+storage. A single file can still be sent on its own from **Media files**.
 
 Progress is shown in the panel; the upload can be cancelled, and it retries once
 if the connection drops. A 2.7 GiB film on a domestic uplink takes as long as
@@ -455,7 +463,34 @@ network, no credentials, and it leaves the live library untouched.
 
 ---
 
-## What this setup is good for — and what it is not
+## View counts
+
+Each film counts **one anonymous view per browser**, and only after **five
+seconds of real playback** — opening a card in passing is not a view, and a
+refresh is not another one. The number appears on the card, on the watch page
+(`720p · 1 source · 12 views`) and in the admin, both per film and as a total.
+
+How it stays honest without accounts or a third party:
+
+- The player sends one ~90-byte beacon when playback passes five seconds.
+- The browser remembers the title for six hours; the server also refuses a
+  repeat from the same address within 30 minutes.
+- Crawlers, link previewers and requests with no user agent are ignored.
+- The owner's own previews do not count while the admin token is in the tab.
+
+The numbers live in `<storage>/stats.json`, never in `library.json`: a view must
+not rewrite the catalogue. Saves are batched (about 5 s) and atomic, so a crash
+loses at most the last few seconds of counts.
+
+This is a small, honest counter, not analytics: it stores no cookies, no
+fingerprint, no comment history, and it cannot tell a curious visitor from a
+determined faker. There is a test for the rules:
+
+```
+node test-views.mjs
+```
+
+## What this setup is good for - and what it is not
 
 Quick Tunnels are documented by Cloudflare as **for testing and development**,
 with no uptime guarantee. They are perfect for showing the site to a handful of

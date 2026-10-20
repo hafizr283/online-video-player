@@ -56,6 +56,14 @@ const bytes = (n) => {
   return `${v < 10 && i > 0 ? v.toFixed(1) : Math.round(v)} ${units[i]}`;
 };
 
+/** 950 -> 950, 12,400 -> 12K, 1,240,000 -> 1.2M; the admin reads numbers fast. */
+const count = (n) => {
+  const v = Number(n) || 0;
+  if (v < 1000) return String(v);
+  if (v < 1000000) return `${(v / 1000).toFixed(v < 10000 ? 1 : 0).replace(/\.0$/, "")}K`;
+  return `${(v / 1000000).toFixed(1).replace(/\.0$/, "")}M`;
+};
+
 // ---- gate -------------------------------------------------------------------
 function lock(message) {
   sessionStorage.removeItem(TOKEN_KEY);
@@ -86,7 +94,8 @@ function renderAll() {
   const manifest = state.titles.filter((t) => !t.builtin);
   $("app-sub").textContent =
     `${state.titles.length} title${state.titles.length === 1 ? "" : "s"} · ${manifest.length} managed here · ` +
-    `${state.files.length} media file${state.files.length === 1 ? "" : "s"}`;
+    `${state.files.length} media file${state.files.length === 1 ? "" : "s"} · ` +
+    `${count((state.views && state.views.total) || 0)} view${((state.views && state.views.total) || 0) === 1 ? "" : "s"}`;
   $("count-hint").textContent = `${state.titles.length} total`;
   $("orphan-hint").textContent = state.orphans.length
     ? `${state.orphans.length} not used by any movie`
@@ -127,7 +136,8 @@ function renderTitles() {
           ${cloud}
         </div>
         <div class="admin-title__meta">
-          ${[t.year, (t.qualities || []).map((q) => `${q}p`).join(" · "), `${t.source_count} source${t.source_count === 1 ? "" : "s"}`]
+          ${[t.year, (t.qualities || []).map((q) => `${q}p`).join(" · "), `${t.source_count} source${t.source_count === 1 ? "" : "s"}`,
+            Number(t.views) > 0 ? `${count(t.views)} view${Number(t.views) === 1 ? "" : "s"}` : ""]
             .filter(Boolean).map(esc).join(" · ")}
         </div>
         <div class="chips">${catChips}</div>

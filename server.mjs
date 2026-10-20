@@ -450,6 +450,127 @@ const catalogue = async () => (HIDE_SEEDS ? libraryTitles() : allTitles());
 
 const titleById = async (id) => (await catalogue()).find((t) => t.id === id) || null;
 
+// ---------------------------------------------------------------------------
+// View counts
+//
+// A view is counted once per title per browser, after five seconds of real
+// playback. The numbers live in stats.json beside the media and never in
+// library.json: a view must not rewrite the catalogue, which is what every
+// page reads. Writes are batched and land with a rename, so an interrupted
+// save cannot leave half a counter behind.
+// ---------------------------------------------------------------------------
+const STATS_FILE = join(STORAGE, "stats.json");
+const VIEW_WINDOW_MS = 30 * 60 * 1000; // one view per address per film per window
+const VIEW_MEMORY_MAX = 20000;         // bounded dedupe table
+const VIEWS_FLUSH_MS = 5000;
+
+let viewStats = { v: 1, titles: {} };
+let viewStatsLoaded = false;
+let viewStatsDirty = false;
+let viewsTimer = null;
+let viewsFlushChain = Promise.resolve();
+const recentViews = new Map();
+
+async function loadViewStats() {
+  if (viewStatsLoaded) return viewStats;
+  viewStatsLoaded = true;
+  try {
+    const raw = JSON.parse(stripBom(await readFile(STATS_FILE, "utf8")));
+    const titles = raw && typeof raw === "object" ? raw.titles : null;
+    if (titles && typeof titles === "object" && !Array.isArray(titles)) {
+      viewStats = { v: 1, titles };
+    }
+  } catch (e) {
+    if (e.code !== "ENOENT") {
+      console.warn(`[views] stats.json ignored: ${e.message}`);
+      await rename(STATS_FILE, `${STATS_FILE}.bad`).catch(() => {});
+    }
+  }
+  return viewStats;
+}
+
+const viewsFor = (id) => {
+  const row = viewStats.titles[String(id)];
+  return row ? Number(row.views) || 0 : 0;
+};
+
+const totalViews = () =>
+  Object.values(viewStats.titles).reduce((n, row) => n + (Number(row && row.views) || 0), 0);
+
+function saveViewStatsSoon() {
+  viewStatsDirty = true;
+  if (viewsTimer) return;
+  viewsTimer = setTimeout(() => {
+    viewsTimer = null;
+    saveViewStats().catch((e) => console.warn(`[views] could not save: ${e.message}`));
+  }, VIEWS_FLUSH_MS);
+  if (typeof viewsTimer.unref === "function") viewsTimer.unref();
+}
+
+function saveViewStats() {
+  if (!viewStatsDirty) return viewsFlushChain;
+  viewStatsDirty = false;
+  const body = `${JSON.stringify(viewStats)}\n`;
+  viewsFlushChain = viewsFlushChain.then(async () => {
+    const tmp = join(STORAGE, `.stats-${randomBytes(6).toString("hex")}.tmp`);
+    try {
+      await writeFile(tmp, body, "utf8");
+      await rename(tmp, STATS_FILE);
+    } catch (e) {
+      viewStatsDirty = true;
+      await unlink(tmp).catch(() => {});
+      throw e;
+    }
+  });
+  return viewsFlushChain;
+}
+
+function forgetOldViews(now) {
+  if (recentViews.size < VIEW_MEMORY_MAX) return;
+  for (const [key, at] of recentViews) {
+    if (now - at > VIEW_WINDOW_MS) recentViews.delete(key);
+  }
+  while (recentViews.size >= VIEW_MEMORY_MAX) recentViews.delete(recentViews.keys().next().value);
+}
+
+/**
+ * POST /api/view { id } — sent once by the player after five seconds of
+ * playback. Anonymous by design: the page decides when a view happened, and
+ * the server only refuses repeats from one address and obvious automation.
+ * That makes the number honest for people and cheap for bots, not proof.
+ */
+async function recordView(req, res, url) {
+  let raw;
+  try { raw = await readBody(req, 2048); } catch { return sendJson(res, 413, { ok: false, error: "too_large" }); }
+  let body = null;
+  try { body = JSON.parse(raw); } catch { /* query-string fallback */ }
+  const id = String((body && body.id) || url.searchParams.get("id") || "");
+  if (!id) return sendJson(res, 400, { ok: false, error: "no_id" });
+
+  const title = await titleById(id);
+  if (!title) return sendJson(res, 404, { ok: false, error: "unknown_title" });
+
+  const agent = String(req.headers["user-agent"] || "");
+  if (!agent || /bot|crawl|spider|slurp|headless|preview|monitor|curl|wget/i.test(agent)) {
+    return sendJson(res, 200, { ok: true, counted: false, views: viewsFor(id) });
+  }
+
+  const now = Date.now();
+  const key = `${clientIp(req)}|${id}`;
+  forgetOldViews(now);
+  if (now - (recentViews.get(key) || 0) < VIEW_WINDOW_MS) {
+    return sendJson(res, 200, { ok: true, counted: false, views: viewsFor(id) });
+  }
+  recentViews.set(key, now);
+
+  const row = viewStats.titles[id] || { views: 0, last: 0 };
+  row.views = (Number(row.views) || 0) + 1;
+  row.last = now;
+  viewStats.titles[id] = row;
+  saveViewStatsSoon();
+  return sendJson(res, 200, { ok: true, counted: true, views: row.views });
+}
+
 const posterUrl = (t) => t.poster || `/poster/${t.id}.svg`;
 
 /**
@@ -497,6 +618,7 @@ const cardOf = (t) => ({
   qualities: [...new Set(t.sources.map((s) => s.quality))].sort((a, b) => b - a),
   source_count: t.sources.length,
   description: t.description,
+  views: viewsFor(t.id),
   url: `/movie/${t.id}`,
 });
 
@@ -2118,6 +2240,7 @@ async function adminState() {
     categories: t.categories,
     poster: posterUrl(t),
     source_count: t.sources.length,
+    views: viewsFor(t.id),
     qualities: [...new Set(t.sources.map((s) => s.quality))].sort((a, b) => b - a),
     // How much of this film still lives here. One number is enough for the admin
     // to say "not on Azure yet" without listing every file twice.
@@ -2152,6 +2275,9 @@ async function adminState() {
       uploading: runningUpload ? uploadView(runningUpload) : null,
     },
     cdns: CDNS.map((c) => ({ label: c.label, provider: c.provider, priority: c.priority, broken: Boolean(c.broken) })),
+    // Counts are per title above; the total is the one number worth seeing at a
+    // glance when deciding what to promote.
+    views: { total: totalViews() },
     categories: (await allCategories()).map((c) => ({
       ...c, count: all.filter((t) => t.categories.includes(c.id)).length,
     })),
@@ -2928,6 +3054,12 @@ async function handleSite(req, res) {
 
   if (p === "/api/catalogue.json") return sendJsonCached(req, res, await catalogueJson());
 
+  // The player reports a view here; see recordView for what counts.
+  if (p === "/api/view") {
+    if (req.method !== "POST") return sendJson(res, 405, { ok: false, error: "method" });
+    return recordView(req, res, url);
+  }
+
   const catApi = p.match(/^\/api\/category\/([A-Za-z0-9._-]+)\.json$/);
   if (catApi) {
     const data = await categoryJson(catApi[1]);
@@ -3104,6 +3236,7 @@ async function handleSite(req, res) {
 const listen = (port, handler) => new Promise((ok) => http.createServer(handler).listen(port, BIND_HOST, ok));
 
 await libraryTitles(); // warm the manifest cache once so problems show at boot
+await loadViewStats(); // counts are read once and kept in memory until saved
 
 const siteHandler = (req, res) => handleSite(req, res).catch((e) => { console.error(e); send(res, 500, "error"); });
 

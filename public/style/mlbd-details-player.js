@@ -680,7 +680,10 @@ function mountSource(source, opts = {}) {
   });
   art.on("video:timeupdate", () => {
     if (token !== state.playbackToken) return;
-    if (Number(art.currentTime || 0) > 5) { try { writePref(source); } catch { /* ignore */ } }
+    if (Number(art.currentTime || 0) > 5) {
+      try { writePref(source); } catch { /* ignore */ }
+      reportView();
+    }
     if (Date.now() - state.lastPositionSave > 5000) {
       state.lastPositionSave = Date.now();
       savePosition(art);
@@ -862,7 +865,8 @@ function refreshQualityMenu() {
 // Three small things that make the difference between "a video tag" and a
 // player: it starts where the viewer stopped, a press held on the picture plays
 // it at double speed, and a link that cannot keep up steps down a quality
-// instead of spinning. Positions stay in this browser; nothing is sent anywhere.
+// instead of spinning. Positions stay in this browser; the one thing that
+// leaves it is the anonymous view count at the end of this section.
 // ---------------------------------------------------------------------------
 const positionKey = () => `mlbd_pos:${location.pathname}`;
 
@@ -900,6 +904,37 @@ function savedPosition() {
 
 function forgetPosition() {
   try { localStorage.removeItem(positionKey()); } catch { /* ignore */ }
+}
+
+/**
+ * One anonymous view per film per browser per six hours, sent after five
+ * seconds of real playback rather than on page load — a card seen in passing is
+ * not a view, and a refresh is not another one. The server refuses a repeat
+ * from the same address within 30 minutes as well, so a cleared browser is not
+ * an unlimited counter either.
+ */
+const VIEW_KEY = "mlbd_view:";
+const VIEW_GAP_MS = 6 * 60 * 60 * 1000;
+let viewReported = false;
+
+function reportView() {
+  if (viewReported) return;
+  const id = state.config && state.config.title_id;
+  if (!id) return;
+  // The owner's own previews would pad the only number here meant to be honest.
+  try { if (sessionStorage.getItem("mlbd_admin_token")) return; } catch { /* ignore */ }
+  viewReported = true;
+  try {
+    const key = VIEW_KEY + id;
+    if (Date.now() - Number(localStorage.getItem(key) || 0) < VIEW_GAP_MS) return;
+    localStorage.setItem(key, String(Date.now()));
+  } catch { /* storage blocked: the server's window still applies */ }
+  const body = new Blob([JSON.stringify({ id })], { type: "application/json" });
+  try {
+    if (navigator.sendBeacon && navigator.sendBeacon("/api/view", body)) return;
+  } catch { /* fall through to fetch */ }
+  fetch("/api/view", { method: "POST", body, headers: { "Content-Type": "application/json" }, keepalive: true })
+    .catch(() => { /* a lost view is not worth retrying over */ });
 }
 
 const HOLD_MS = 320;
