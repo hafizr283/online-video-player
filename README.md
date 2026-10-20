@@ -83,6 +83,7 @@ Every option is optional; the defaults run a local demo.
 | `AZURE_CONTAINER_URL` | unset | `https://<account>.blob.core.windows.net/<container>` |
 | `AZURE_SAS` | unset | a **container** SAS with Read/Add/Create/Write |
 | `AZURE_ONLY` | unset | `1` = stream only from Blob storage; an unpublished film will not play |
+| `AZURE_UPLOAD_BPS` | unset | upload ceiling in bytes/s (`600000` ≈ 4.8 Mbit/s) so publishing cannot saturate the line |
 
 Publishing to Blob storage, the gate, and the mirrors are described in
 [HOSTING.md](HOSTING.md).

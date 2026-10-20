@@ -103,6 +103,9 @@ const app = spawn(NODE, [APP], {
     FFMPEG_PATH: FFMPEG,
     AZURE_CONTAINER_URL: "http://127.0.0.1:8899/movies",
     AZURE_SAS: SAS,
+    // Exercise the throttle branch without slowing the suite: 2 MB/s against a
+    // 1 MB fixture finishes inside the free first second.
+    AZURE_UPLOAD_BPS: "2000000",
   },
   stdio: ["ignore", "pipe", "pipe"],
 });
@@ -184,6 +187,10 @@ try {
     }],
     categories: [],
   }, null, 2));
+
+  const capState = await (await fetch(`${SITE}/api/admin/state`, { headers: AUTH })).json();
+  pass(capState.azure.uploadBytesPerSecond === 2000000, "the upload cap reaches the admin",
+    String(capState.azure.uploadBytesPerSecond));
 
   const putsBefore = seen.filter((s) => s.method === "PUT").length;
   const bulkRes = await fetch(`${SITE}/api/admin/azure?title=two-files`, { method: "POST", headers: AUTH });

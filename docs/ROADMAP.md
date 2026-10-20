@@ -3,30 +3,33 @@
 Written after the Blob-storage work went in. Each item says what it buys and
 what it costs, so the next one can be picked without re-deriving the reasoning.
 
-## Waiting on one credential
+## Publishing the library (in progress)
 
-**Publish the three films and measure it.** The code path is complete and tested
-against a mock container (`test-azure.mjs`, 31 checks), and playback from a real
-public blob has been verified in a browser. What has *not* run yet is a real
-upload, because writing needs a **container** SAS (`sr=c`, Read/Add/Create/
-Write). A blob SAS (`sr=b`) is refused on purpose.
+The credential arrived on 2026-10-20 (container SAS, `sr=c`, expires 2027-07-01)
+and real uploads now work. Recorded as it happened:
 
-Two ways in, and the second needs no key at all:
+| film | files | bytes | time | result |
+|---|---|---|---|---|
+| This is dangerous | 1 | 25.0 MB | 26 s | public `HEAD` 200, 26,208,060 bytes |
+| Check | 2 | 130.3 MB | 152 s | master and 480p on separate blobs |
+| This means war | 2 | 3.5 GiB | ~100 min | running, capped |
 
-1. Generate a container SAS and put it in `<storage>/.azure.env`. Then **Send
-   film to Azure** from the admin publishes a film's master and rendition in one
-   job.
-2. Upload the files through the Azure portal and let the server adopt them:
-   `PATCH /api/admin/azure?file=<local>&blob=v1/...` verifies the blob with a
-   public `HEAD` and points the title at it (see HOSTING.md).
+Effective uplink: **0.86–0.96 MB/s**.
 
-Once every title reports `0` local files, `AZURE_ONLY=1` makes "streaming from
-this PC" impossible rather than merely unlikely.
+**The lesson worth keeping:** at full speed the upload saturated the line and the
+public site timed out (blob `HEAD` 4.5–15.6 s, tunnel dead). A migration can take
+the service down by itself. Uploads are now capped (`AZURE_UPLOAD_BPS`, 600000),
+and with the cap the same upload left tunnel responses at 0.45–0.76 s. Any future
+bulk transfer against this line needs the same treatment.
 
-When it runs, record: upload seconds and MB/s from this PC's uplink, first-byte
-time from the player local vs. remote, and whether Chrome ever needs the CORS
-rule (it does not today, because the player drops `crossorigin` for remote
-sources).
+**Next step after the last film lands:** check that every title reports `0` local
+files, then `AZURE_ONLY=1`, restart, and confirm no player config contains a
+`/p/` URL and that a real browser session plays from `blob.core.windows.net`.
+
+Then the obvious follow-up: **resumable block uploads**. The 3.5 GiB film lost
+9% of its progress to one cancel, because a single PUT starts over. `Put Block` +
+`Put Block List` would make an interrupted publish resume instead of restart,
+which matters at this uplink speed.
 
 ## Next
 

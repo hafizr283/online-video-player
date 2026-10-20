@@ -233,6 +233,7 @@ if ($TranscodeEncoder) { $env:TRANSCODE_ENCODER = $TranscodeEncoder } else { Rem
 #   AZURE_CONTAINER_URL=https://<account>.blob.core.windows.net/<container>
 #   AZURE_SAS=?sv=...&sr=c&sig=...
 #   AZURE_ONLY=1            (optional: never stream a film from this PC)
+#   AZURE_UPLOAD_BPS=600000 (optional: cap the upload, in bytes per second)
 #
 # Absent or incomplete, the site simply keeps streaming from this PC; nothing
 # fails. The SAS is never printed and never reaches a browser.
@@ -240,6 +241,7 @@ $azureEnvFile = Join-Path $StorageDir ".azure.env"
 Remove-Item Env:AZURE_CONTAINER_URL -ErrorAction SilentlyContinue
 Remove-Item Env:AZURE_SAS -ErrorAction SilentlyContinue
 Remove-Item Env:AZURE_ONLY -ErrorAction SilentlyContinue
+Remove-Item Env:AZURE_UPLOAD_BPS -ErrorAction SilentlyContinue
 if (Test-Path $azureEnvFile) {
   foreach ($line in Get-Content $azureEnvFile -Encoding utf8) {
     $trimmed = $line.Trim()
@@ -251,12 +253,14 @@ if (Test-Path $azureEnvFile) {
     if ($key -ieq "AZURE_CONTAINER_URL" -and $value) { $env:AZURE_CONTAINER_URL = $value }
     elseif ($key -ieq "AZURE_SAS" -and $value) { $env:AZURE_SAS = $value }
     elseif ($key -ieq "AZURE_ONLY" -and $value) { $env:AZURE_ONLY = $value }
+    elseif ($key -ieq "AZURE_UPLOAD_BPS" -and $value) { $env:AZURE_UPLOAD_BPS = $value }
   }
 }
 $azureOnly = $env:AZURE_ONLY -match "^(1|true|yes|on)$"
 if ($env:AZURE_CONTAINER_URL -and $env:AZURE_SAS) {
   $where = if ($azureOnly) { "streaming from Blob storage only" } else { "films can be published there" }
-  Say "Blob storage: $($env:AZURE_CONTAINER_URL) - $where."
+  $cap = if ($env:AZURE_UPLOAD_BPS) { ", uploads capped at $([math]::Round([int]$env:AZURE_UPLOAD_BPS / 1000)) KB/s" } else { "" }
+  Say "Blob storage: $($env:AZURE_CONTAINER_URL) - $where$cap."
 } elseif ($azureOnly) {
   Say "Blob storage: AZURE_ONLY is set but there is no container SAS - nothing can play."
 } else {

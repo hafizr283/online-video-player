@@ -309,10 +309,31 @@ your upload takes — start it and leave it. When it lands, the film's row shows
 **on Azure** and every movie that uses the file starts streaming from Azure on
 the next page load. No restart, no re-save of the title.
 
+Measured on this line (2026-10-20): **0.86–0.96 MB/s**, i.e. 25 MB in 26 s and
+130 MB in 152 s. Plan on roughly 100 minutes for a 3.5 GiB master plus rendition.
+
 The blob goes to `v1/<12 random hex>/<name>`. The container is public-read, so
 the URL is the handle: the random folder is what keeps a published film from
 being trivially discoverable, and publishing the same file twice does not
 overwrite a copy someone may be watching.
+
+### Keep the site up while it uploads
+
+An upload at full speed is a denial of service you inflict on yourself. Measured
+here: with the 3.5 GiB film going up flat out, blob `HEAD`s went from 0.4 s to
+4.5–15.6 s and `https://movies.hafizr283.me` **timed out**. The site was down
+because it was being migrated.
+
+So uploads are capped, in bytes per second:
+
+```
+AZURE_UPLOAD_BPS=600000
+```
+
+That is about 60% of the measured uplink. With it set, the same upload ran with
+tunnel responses at 0.45–0.76 s and blob `HEAD`s at 0.18–0.45 s. Set `0` to
+remove the cap (fine when nobody is watching), or raise it if your line is
+faster than this one.
 
 ### Streaming only from Blob storage
 

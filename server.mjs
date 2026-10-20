@@ -1130,6 +1130,10 @@ const AZURE_PREFIX = String(process.env.AZURE_PREFIX || "v1").trim() || "v1";
 // they are not playable yet; nothing streams from this PC. Off by default,
 // because a library that has not been published would have nothing to play.
 const AZURE_ONLY = /^(1|true|yes|on)$/i.test(String(process.env.AZURE_ONLY || "").trim());
+// Publishing must not starve the site it is publishing for: this is a ceiling in
+// bytes per second on the upload itself. 0 means "as fast as the line allows",
+// which is only safe when nobody is watching.
+const AZURE_UPLOAD_BPS = Number.parseInt(process.env.AZURE_UPLOAD_BPS || "0", 10) || 0;
 
 const conversions = new Map();   // id -> job, newest last
 let runningConversion = null;    // the job holding ffmpeg right now
@@ -1640,6 +1644,7 @@ async function runUploadJob(job) {
         file: join(STORAGE, item.name),
         contentType: MIME[extname(item.name).toLowerCase()] || "video/mp4",
         signal: job.signal,
+        bytesPerSecond: AZURE_UPLOAD_BPS,
         onProgress: (p) => {
           item.sent = p.sent;
           item.bytes = p.total || item.bytes;
@@ -2108,6 +2113,8 @@ async function adminState() {
       prefix: AZURE_PREFIX,
       // Streaming is restricted to published copies: nothing here is served.
       only: AZURE_ONLY,
+      // Ceiling on the upload itself, so publishing cannot saturate the line.
+      uploadBytesPerSecond: AZURE_UPLOAD_BPS,
       uploading: runningUpload ? uploadView(runningUpload) : null,
     },
     cdns: CDNS.map((c) => ({ label: c.label, provider: c.provider, priority: c.priority, broken: Boolean(c.broken) })),

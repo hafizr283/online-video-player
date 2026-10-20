@@ -15,6 +15,7 @@ import https from "node:https";
 import { createReadStream } from "node:fs";
 import { stat } from "node:fs/promises";
 import { randomBytes } from "node:crypto";
+import { Transform } from "node:stream";
 
 // New enough for a single PUT of up to 5 GiB, which is the whole point: a film
 // is one request, not a block dance.
@@ -80,9 +81,34 @@ const pickHttp = (url) => (url.protocol === "http:" ? http : https);
  * Resolves { ok, url, bytes, etag }, rejects with a message that names what
  * Azure said. `signal` cancels; an aborted upload leaves no visible blob.
  */
+/**
+ * A pass-through that keeps the average below `bytesPerSecond`.
+ *
+ * Publishing a three-gigabyte film at full speed saturates a domestic uplink:
+ * measured on this line, blob HEADs went from 0.4 s to 15 s and the public
+ * tunnel timed out, so the site was down *because* it was being migrated. A
+ * little headroom costs minutes; a dark site costs viewers.
+ *
+ * The first second is free, so a small file is not slowed down at all.
+ */
+function throttle(bytesPerSecond) {
+  const started = Date.now();
+  let bytes = 0;
+  const slack = 1000;
+  return new Transform({
+    transform(chunk, _enc, done) {
+      bytes += chunk.length;
+      const due = started + (bytes / bytesPerSecond) * 1000 - slack;
+      const wait = due - Date.now();
+      if (wait > 20) setTimeout(() => done(null, chunk), wait);
+      else done(null, chunk);
+    },
+  });
+}
+
 export async function putBlob({
   container, sas, name, file, contentType = "application/octet-stream",
-  onProgress, signal, timeoutMs = 6 * 60 * 60 * 1000,
+  onProgress, signal, timeoutMs = 6 * 60 * 60 * 1000, bytesPerSecond = 0,
 } = {}) {
   const base = containerBase(container);
   const auth = parseSas(sas);
@@ -147,7 +173,8 @@ export async function putBlob({
       error.code = code;
       reject(error);
     });
-    stream.pipe(req);
+    if (bytesPerSecond > 0) stream.pipe(throttle(bytesPerSecond)).pipe(req);
+    else stream.pipe(req);
   });
 
   // Two attempts: a dropped connection 40 minutes into a film should not mean
