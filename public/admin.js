@@ -175,8 +175,9 @@ function renderAzure() {
   const hint = $("azure-hint");
   if (!a.configured) {
     hint.hidden = false;
-    hint.textContent =
-      "Blob storage is not configured. Set AZURE_CONTAINER_URL and AZURE_SAS, then restart; films stay on this PC meanwhile.";
+    hint.textContent = a.container
+      ? `Blob storage is set up at ${a.container} but has no key yet. Paste a container SAS into AZURE_SAS and restart; films stay on this PC meanwhile.`
+      : "Blob storage is not configured. Set AZURE_CONTAINER_URL and AZURE_SAS, then restart; films stay on this PC meanwhile.";
     return;
   }
   hint.hidden = false;
