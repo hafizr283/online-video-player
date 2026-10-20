@@ -146,6 +146,29 @@ The watchdog only ever starts a site that is *not* listening; if something holds
 port 8890 without answering, it says so in the log instead of racing a second
 copy for the port.
 
+### The weekly look-over
+
+`MovieLinkBD-Maintenance` (Sundays, 09:30) runs `maintenance.ps1`. It changes
+nothing: it checks the local site, the public address, the tunnel process, every
+title's source against the files on disk, free space on each drive, the age of
+the last backup and the Blob token's expiry, then writes a report to
+`<storage>\.run\maintenance\<date>.md` whose last section is the list of what
+deserves attention.
+
+Run it by hand whenever something feels off:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File maintenance.ps1
+```
+
+Add `-Backup` to let it call `backup.ps1` when the last backup is more than a
+week old. It does not do that by default: a backup copies five gigabytes of
+media to another disk, which is not something to start silently at 09:30.
+
+The report is also the schedule the library runs on: if the site stops during
+the week, the watchdog restarts it within five minutes; if it stays broken, the
+Sunday report says so and says why.
+
 ---
 
 ## Adding movies (the normal workflow)

@@ -186,16 +186,21 @@ if (-not $lastBackup) {
 # ---- 5. Blob storage --------------------------------------------------------
 $azureEnv = Join-Path $storage ".azure.env"
 $azureOn = $false
+$azureUrl = $false
 $azureExpiry = $null
 if (Test-Path $azureEnv) {
   foreach ($line in (Get-Content $azureEnv -Encoding UTF8)) {
     $t = $line.Trim()
+    if ($t.StartsWith("AZURE_CONTAINER_URL=") -and $t.Length -gt 30) { $azureUrl = $true }
     if ($t.StartsWith("AZURE_SAS=") -and $t.Length -gt 20) {
       $azureOn = $true
       $m = [regex]::Match($t, "se=([0-9T:Z-]+)")
       if ($m.Success) { $azureExpiry = $m.Groups[1].Value }
     }
   }
+}
+if ($azureUrl -and -not $azureOn) {
+  Task "Blob storage has a container URL but no SAS in .azure.env: publishing is off and every film streams from this PC."
 }
 if ($azureOn -and $azureExpiry) {
   try {
