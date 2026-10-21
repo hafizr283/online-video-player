@@ -1,8 +1,8 @@
 import { fail, json, randomHex, readJson, blobSafeName } from "../../_lib/http.js";
 import { requireAdmin } from "../../_lib/auth.js";
 import { blobSas, publicBlobUrl } from "../../_lib/azure.js";
+import { MAX_UPLOAD } from "../../_lib/uploads.js";
 
-const MAX_UPLOAD = 8 * 1024 * 1024 * 1024;
 const KINDS = new Set(["video", "poster", "subtitle"]);
 
 /**

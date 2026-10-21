@@ -3,6 +3,7 @@ import test from "node:test";
 import { buildConfig, cardOf, obfuscate, readySources, rowToTitle } from "../functions/_lib/titles.js";
 import { cleanSource } from "../functions/_lib/admin.js";
 import { blobSas, publicBlobUrl } from "../functions/_lib/azure.js";
+import { isMp4Upload, qualityForHeight } from "../functions/_lib/uploads.js";
 
 /** The player's own decoder, copied from public/style/fp-details-player.js. */
 function decode(payload, seed, rounds) {
@@ -109,4 +110,16 @@ test("SAS URL is a blob-scoped service SAS whose signature covers its params", a
 test("publicBlobUrl encodes each segment but keeps the folders", () => {
   const url = publicBlobUrl({ AZURE_ACCOUNT: "acct", AZURE_CONTAINER: "movies" }, "v1/a b/c+d.mp4");
   assert.equal(url, "https://acct.blob.core.windows.net/movies/v1/a%20b/c%2Bd.mp4");
+});
+
+test("public uploads accept only MP4 names and map frame height to a quality", () => {
+  assert.equal(isMp4Upload("Film.MP4", "video/mp4"), true);
+  assert.equal(isMp4Upload("Film.mp4", ""), true);
+  assert.equal(isMp4Upload("Film.mkv", "video/x-matroska"), false);
+  assert.equal(isMp4Upload("Film.mp4", "video/quicktime"), false);
+
+  assert.equal(qualityForHeight(2160), 2160);
+  assert.equal(qualityForHeight(1080), 1080);
+  assert.equal(qualityForHeight(720), 720);
+  assert.equal(qualityForHeight(360), 480);
 });

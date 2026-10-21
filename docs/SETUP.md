@@ -70,8 +70,9 @@ Copy the printed `database_id` into `wrangler.toml`, replacing
 npx --yes wrangler@latest d1 execute fast-player --remote --file=schema.sql
 ```
 
-Expected: `Executed 8 queries` (or similar). If it says the file cannot be
-found, you are not in `E:\job_project\fast-player`.
+Expected: `Executed 19 queries` (or similar). If it says the file cannot be
+found, you are not in `E:\job_project\fast-player`. Re-running `schema.sql` is
+safe; it adds the settings and public-upload tables with `IF NOT EXISTS`.
 
 ---
 
@@ -173,6 +174,25 @@ Expected right now: `{"ok":true,"count":0,...}` — nothing has been migrated ye
 Open `$site/admin`, paste the token, and confirm the dashboard loads. Upload a
 small MP4 with "Publish immediately" ticked, then open the home page on that
 host: the title, poster and playback should all work with the PC off.
+
+### Public uploads
+
+Public uploads are **off by default**, so the existing admin-only flow is
+unchanged. To let visitors upload:
+
+1. Open `$site/admin` → **Upload**.
+2. In **Public uploads**, press **Turn on public uploads**.
+3. Share `$site/upload`.
+
+Visitors can upload only MP4 files that their browser can play. Each upload
+gets a single-use ticket, is rate-limited per address, and is saved as a
+**draft**. Review it in **Library** and press **Publish** when you want it to
+appear. Turning the switch off closes both public endpoints immediately; an
+admin can still upload from the admin page.
+
+The switch lives in the D1 `settings` table (`allow_public_uploads`). It needs
+no new secret and no redeploy. If you deployed an earlier schema, re-run step 1
+once to create `settings`, `upload_tickets`, and `upload_log`.
 
 ---
 

@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#0b0b0f">
+<meta name="robots" content="noindex, nofollow">
+<meta name="description" content="Upload an MP4 film to Fast Player for admin review.">
+<title>Upload a film — Fast Player</title>
+<link rel="stylesheet" href="/style/catalogue.css">
+<link rel="stylesheet" href="/style/admin.css">
+</head>
+<body class="admin">
+
+<header class="site-bar">
+  <a class="site-bar__logo" href="/"><b>Fast</b> Player</a>
+  <span class="site-bar__tag">Upload</span>
+  <span class="site-bar__spacer"></span>
+  <a class="site-bar__link" href="/">Browse</a>
+</header>
+
+<main class="admin-wrap">
+
+  <div class="admin-head">
+    <h1>Upload a film</h1>
+    <span class="spacer"></span>
+    <span class="note">MP4 only · reviewed before publishing</span>
+  </div>
+
+  <section id="closed" class="card" hidden>
+    <h2>Public uploads are closed</h2>
+    <p id="closed-note" class="note">An admin has not opened uploads right now. You can still browse the library.</p>
+    <p><a class="site-bar__link" href="/">Back to the library</a></p>
+  </section>
+
+  <section id="panel" hidden>
+    <form id="upload-form" class="card" novalidate>
+      <h2>Choose an MP4</h2>
+      <p class="note">Uploads are reviewed by an admin before they appear in the library. Use an MP4 that plays in your browser (H.264/AAC is the safest choice).</p>
+
+      <label class="field">MP4 file
+        <input id="file" type="file" accept="video/mp4,.mp4" required>
+      </label>
+      <p id="file-note" class="note">Choose a file to check its duration and quality.</p>
+
+      <label class="field">Title
+        <input id="name" type="text" maxlength="200" required>
+      </label>
+      <label class="field">Year (optional)
+        <input id="year" type="number" min="1888" max="2100" inputmode="numeric">
+      </label>
+      <label class="field">Description (optional)
+        <textarea id="description" rows="3" maxlength="2000"></textarea>
+      </label>
+
+      <p id="detected" class="note"></p>
+
+      <div class="row-actions">
+        <button id="upload" class="btn btn--primary" type="submit" disabled>Upload</button>
+      </div>
+
+      <div class="progress" id="progress" hidden><span id="bar"></span></div>
+      <p id="upload-note" class="note"></p>
+    </form>
+  </section>
+
+  <section id="done" class="card" hidden>
+    <h2>Upload received</h2>
+    <p id="done-note" class="note"></p>
+    <div class="row-actions">
+      <a class="site-bar__link" href="/">Back to the library</a>
+      <button id="another" class="btn" type="button">Upload another</button>
+    </div>
+  </section>
+
+</main>
+
+<script type="module" src="/upload.js?v=1"></script>
+</body>
+</html>

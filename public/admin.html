@@ -58,6 +58,15 @@
 
     <div id="tab-upload" class="panel">
       <div class="card">
+        <h2>Public uploads</h2>
+        <p id="public-upload-status" class="note">Loading…</p>
+        <div class="row-actions">
+          <button id="public-upload-toggle" class="btn" type="button" disabled>Checking…</button>
+          <a class="note" href="/upload" target="_blank" rel="noopener">Open public upload page</a>
+        </div>
+      </div>
+
+      <div class="card">
         <h2>Add a film</h2>
         <label class="field">Video file
           <input id="file" type="file" accept="video/*,.mkv">
@@ -128,6 +137,6 @@
 
 </main>
 
-<script type="module" src="/admin.js?v=4"></script>
+<script type="module" src="/admin.js?v=5"></script>
 </body>
 </html>

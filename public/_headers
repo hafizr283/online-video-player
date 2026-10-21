@@ -15,5 +15,19 @@
 /admin.js
   Cache-Control: no-cache
 
+/upload
+  X-Robots-Tag: noindex, nofollow
+  Cache-Control: no-store
+
+/upload.html
+  X-Robots-Tag: noindex, nofollow
+  Cache-Control: no-store
+
+/upload.js
+  Cache-Control: no-cache
+
+/upload-core.js
+  Cache-Control: no-cache
+
 /style/*
   Cache-Control: no-cache

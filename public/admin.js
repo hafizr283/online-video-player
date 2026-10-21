@@ -11,16 +11,16 @@
  * and the GitHub Actions transcoder turns it into an MP4.
  */
 
+import { probeVideo, putWithRetry, resumeKeyFor, uploadInBlocks } from "./upload-core.js?v=1";
+
 const $ = (id) => document.getElementById(id);
 const TOKEN_KEY = "fp_admin_token";
-const BLOCK = 8 * 1024 * 1024;
-const WORKERS = 3;
 
 let token = "";
 try { token = sessionStorage.getItem(TOKEN_KEY) || ""; } catch { /* storage blocked */ }
 
-let state = { titles: [], categories: [], comments: [], jobs: [], totals: {}, transcode: false };
-let picked = null; // { file, playable, duration, posterBlob }
+let state = { titles: [], categories: [], comments: [], jobs: [], totals: {}, transcode: false, public_uploads: false };
+let picked = null; // { file, playable, duration, posterBlob, width, height }
 let customPoster = null; // Blob from the poster picker; it wins over the frame grab
 
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({
@@ -123,6 +123,7 @@ async function loadState() {
   renderJobs();
   renderCategories();
   renderTargets();
+  renderPublicUploads();
 }
 
 function renderTitles() {
@@ -204,6 +205,37 @@ function renderCategories() {
     <label class="note"><input type="checkbox" name="cat" value="${esc(c.id)}"> ${esc(c.name)}</label>
   `).join("") + "</div>";
 }
+
+function renderPublicUploads() {
+  const status = $("public-upload-status");
+  const button = $("public-upload-toggle");
+  if (!status || !button) return;
+  const open = Boolean(state.public_uploads);
+  status.textContent = open
+    ? "On — anyone with the link can upload an MP4. New uploads arrive as drafts for you to review and publish."
+    : "Off — only an admin can upload. Turn this on to let anyone with the link upload an MP4.";
+  status.className = "note" + (open ? " is-ok" : "");
+  button.textContent = open ? "Turn off public uploads" : "Turn on public uploads";
+  button.className = "btn" + (open ? " btn--danger" : " btn--primary");
+  button.disabled = false;
+  button.setAttribute("aria-pressed", String(open));
+}
+
+$("public-upload-toggle").addEventListener("click", async () => {
+  const button = $("public-upload-toggle");
+  button.disabled = true;
+  try {
+    const data = await api("/api/admin/settings", {
+      method: "POST",
+      body: { allow_public_uploads: !state.public_uploads },
+    });
+    state.public_uploads = Boolean(data.allow_public_uploads);
+    renderPublicUploads();
+  } catch (error) {
+    alert(error.message);
+    button.disabled = false;
+  }
+});
 
 $("titles").addEventListener("click", async (event) => {
   const button = event.target.closest("button[data-act]");
@@ -344,158 +376,6 @@ fileInput.addEventListener("change", async () => {
   }
   uploadBtn.disabled = false;
 });
-
-async function probeVideo(file) {
-  const url = URL.createObjectURL(file);
-  const video = document.createElement("video");
-  video.preload = "metadata";
-  video.muted = true;
-  video.playsInline = true;
-  video.src = url;
-
-  const loaded = await new Promise((resolve) => {
-    const done = (value) => resolve(value);
-    video.addEventListener("loadedmetadata", () => done(true), { once: true });
-    video.addEventListener("error", () => done(false), { once: true });
-    setTimeout(() => done(false), 8000);
-  });
-
-  if (!loaded) {
-    URL.revokeObjectURL(url);
-    return { playable: false, duration: 0, posterBlob: null };
-  }
-
-  const duration = Number(video.duration) || 0;
-  let posterBlob = null;
-  try {
-    const at = Math.max(0.1, Math.min(duration * 0.1, Math.max(duration - 1, 0.1)));
-    video.currentTime = at;
-    await new Promise((resolve) => {
-      video.addEventListener("seeked", resolve, { once: true });
-      setTimeout(resolve, 2500);
-    });
-    // Give the decoder one painted frame before the canvas copy. The callback
-    // does not fire for an off-DOM, paused video in some Chromium builds, so it
-    // must race a timer. Without the timer the probe never resolves and the
-    // Upload button stays disabled forever.
-    await new Promise((resolve) => {
-      let settled = false;
-      const finish = () => { if (!settled) { settled = true; resolve(); } };
-      try {
-        if (video.requestVideoFrameCallback) video.requestVideoFrameCallback(finish);
-      } catch { /* fall through to the timer */ }
-      setTimeout(finish, 300);
-    });
-
-    const vw = video.videoWidth || 500;
-    const vh = video.videoHeight || 750;
-    const width = 500;
-    const height = Math.round(width * (vh / vw)) || 750;
-    const canvas = document.createElement("canvas");
-    canvas.width = width;
-    canvas.height = Math.min(1100, Math.max(300, height));
-    canvas.getContext("2d").drawImage(video, 0, 0, canvas.width, canvas.height);
-    posterBlob = await new Promise((resolve) => canvas.toBlob(resolve, "image/jpeg", 0.82));
-  } catch { /* a missing poster is recoverable; the title keeps its generated art */ }
-
-  URL.revokeObjectURL(url);
-  return { playable: true, duration, posterBlob };
-}
-
-async function putWithRetry(url, body, headers = {}, tries = 3) {
-  let last;
-  for (let attempt = 0; attempt < tries; attempt++) {
-    try {
-      const res = await fetch(url, { method: "PUT", headers, body });
-      if (res.ok) return res;
-      last = new Error(`HTTP ${res.status}`);
-      if (res.status >= 400 && res.status < 500) break; // a bad SAS will not heal
-    } catch (error) {
-      last = error;
-    }
-    await new Promise((r) => setTimeout(r, 400 * 2 ** attempt));
-  }
-  throw last || new Error("upload failed");
-}
-
-/**
- * A resumable upload needs a stable identity for "this file". Name, size and
- * mtime are enough to tell two pickings of the same file apart from a different
- * film with the same name.
- */
-async function resumeKeyFor(file) {
-  const data = new TextEncoder().encode(`${file.name}|${file.size}|${file.lastModified}`);
-  const digest = await crypto.subtle.digest("SHA-256", data);
-  return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("").slice(0, 16);
-}
-
-const RESUME_PREFIX = "fp_upload:";
-
-function readResume(key) {
-  try { return JSON.parse(localStorage.getItem(RESUME_PREFIX + key) || "null"); }
-  catch { return null; }
-}
-
-function writeResume(key, value) {
-  try { localStorage.setItem(RESUME_PREFIX + key, JSON.stringify(value)); }
-  catch { /* private mode: resume degrades to a plain upload */ }
-}
-
-function clearResume(key) {
-  try { localStorage.removeItem(RESUME_PREFIX + key); } catch { /* ignore */ }
-}
-
-/**
- * Azure block upload: 8 MB blocks, three in flight, a stable block id each, then
- * one commit. Re-running a failed block is safe; the commit is the only step
- * that makes the blob visible.
- *
- * Blocks accepted in an earlier attempt (same file, same blob path) are skipped.
- * Their ids are deterministic, so the final list is identical whether a block
- * arrived now or before a reload.
- */
-async function uploadInBlocks(file, uploadUrl, onProgress, { resumeKey, blob } = {}) {
-  const total = Math.ceil(file.size / BLOCK);
-  const ids = new Array(total);
-  const saved = resumeKey ? readResume(resumeKey) : null;
-  const done = new Set(saved && saved.blob === blob ? saved.done : []);
-  const queue = [...Array(total).keys()].filter((i) => !done.has(i));
-
-  let sent = 0;
-  for (const index of done) sent += Math.min(BLOCK, file.size - index * BLOCK);
-  onProgress(sent / file.size);
-
-  const worker = async () => {
-    for (;;) {
-      const index = queue.shift();
-      if (index === undefined) return;
-      const start = index * BLOCK;
-      const chunk = file.slice(start, Math.min(file.size, start + BLOCK));
-      const id = btoa(`block-${String(index).padStart(6, "0")}`);
-      ids[index] = id;
-      await putWithRetry(`${uploadUrl}&comp=block&blockid=${encodeURIComponent(id)}`, chunk, {
-        "content-type": "application/octet-stream",
-      });
-      done.add(index);
-      if (resumeKey) writeResume(resumeKey, { blob, done: [...done] });
-      sent += chunk.size;
-      onProgress(sent / file.size);
-    }
-  };
-
-  await Promise.all(Array.from({ length: Math.min(WORKERS, total) }, worker));
-
-  const xml = '<?xml version="1.0" encoding="utf-8"?><BlockList>' +
-    ids.map((id) => `<Latest>${id}</Latest>`).join("") + "</BlockList>";
-
-  await putWithRetry(`${uploadUrl}&comp=blocklist`, xml, {
-    "content-type": "application/xml",
-    "x-ms-blob-content-type": file.type || "video/mp4",
-    "x-ms-blob-cache-control": "public, max-age=31536000, immutable",
-  });
-
-  if (resumeKey) clearResume(resumeKey);
-}
 
 async function uploadPoster(blob) {
   const slot = await api("/api/admin/upload-url", {

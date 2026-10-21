@@ -26,7 +26,7 @@ existing Pages project instead, add `--project-name <project>` to
 | --- | --- | --- |
 | Pages, player, admin | Cloudflare Pages | static files in `public/` |
 | `/api/*`, `/movie/:id`, `/category/:id`, `/poster/:id.svg` | Pages Functions | `functions/` |
-| Titles, comments, views, queue | D1 | `schema.sql` |
+| Titles, comments, views, queue, settings | D1 | `schema.sql` |
 | Video, posters, incoming originals | Azure Blob | browser uploads with a 4-hour, single-blob SAS |
 | MKV/HEVC → MP4 | GitHub Actions (optional) | `.github/workflows/transcode.yml` |
 
@@ -34,13 +34,13 @@ existing Pages project instead, add `--project-name <project>` to
 
 ```
 functions/
-  _lib/            http, auth, Azure SAS, title/config mapping
-  api/             library, category, view, comments
-  api/admin/       state, titles, upload-url, transcode, comment
+  _lib/            http, auth, Azure SAS, settings, title/config mapping
+  api/             library, category, view, comments, public uploads
+  api/admin/       state, settings, titles, upload-url, transcode, comment
   movie/[id].js    watch page (injects the player config)
   category/[id].js category page
   poster/[id].js   generated poster for a title with no frame
-public/            static site + admin + comments
+public/            static site + admin + public upload + comments
 migration/         one-time library.json -> seed.sql
 tests/             unit + in-memory D1 integration tests
 ```
@@ -50,6 +50,10 @@ tests/             unit + in-memory D1 integration tests
 - **Admin:** `Authorization: Bearer <token>` only, never a query string. No
   `ADMIN_TOKENS` configured means every admin route is 404. Eight wrong tokens
   from one address lock it for 15 minutes.
+- **Public uploads:** off by default. An admin turns them on from the Upload
+  tab. The public page accepts MP4 only, uses a single-use expiring ticket, is
+  rate-limited per address, and saves each upload as a **draft** for admin
+  review. Admin uploads keep the existing token gate and are unchanged.
 - **Delete a title:** deletes the row **and its blobs**. Every failed delete is
   reported; nothing is silently claimed.
 - **Publish:** refused when no source is playable, so a dead card never reaches

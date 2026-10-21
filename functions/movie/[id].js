@@ -1,14 +1,7 @@
 import { blobSas } from "../_lib/azure.js";
 import { escapeHtml, fail } from "../_lib/http.js";
+import { ADMIN_NAV } from "../_lib/nav.js";
 import { buildConfig, cardOf, obfuscate, posterFor, rowToTitle } from "../_lib/titles.js";
-
-const ADMIN_BUTTON =
-  '<a class="site-bar__admin" href="/admin" title="Manage videos" aria-label="Manage videos">' +
-  '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" ' +
-  'stroke-linecap="round" aria-hidden="true" focusable="false">' +
-  '<path d="M4 7h9M17 7h3M4 17h3M11 17h9"/>' +
-  '<circle cx="15" cy="7" r="2.2"/><circle cx="9" cy="17" r="2.2"/></svg>' +
-  "<span>Manage videos</span></a>";
 
 const DAY = 24 * 60 * 60 * 1000;
 
@@ -100,7 +93,7 @@ export async function onRequestGet({ request, env, params }) {
   const html = (await asset.text())
     .replace("<!--FP_PLAYER_CONFIG-->", injected)
     .replace("<!--FP_TITLE_META-->", meta)
-    .replace("<!--FP_ADMIN_LINK-->", ADMIN_BUTTON)
+    .replace("<!--FP_ADMIN_LINK-->", ADMIN_NAV)
     .replace("<!--FP_HEAD_META-->", headMeta)
     .replaceAll("<!--FP_TITLE-->", escapeHtml(t.title))
     .replace(/<!--FP_DEV_PANEL_START-->[\s\S]*?<!--FP_DEV_PANEL_END-->/, "")

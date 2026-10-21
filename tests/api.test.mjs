@@ -21,6 +21,10 @@ import * as editTitle from "../functions/api/admin/titles/[id].js";
 import * as uploadUrl from "../functions/api/admin/upload-url.js";
 import * as transcode from "../functions/api/admin/transcode.js";
 import * as commentAdmin from "../functions/api/admin/comment.js";
+import * as adminSettings from "../functions/api/admin/settings.js";
+import * as uploadConfig from "../functions/api/upload-config.js";
+import * as publicUploadUrl from "../functions/api/upload-url.js";
+import * as publicUploads from "../functions/api/uploads.js";
 
 // ---------------------------------------------------------------------------
 // A D1-shaped façade over node:sqlite
@@ -297,6 +301,7 @@ test("admin state requires a bearer token; unset token config is a 404", async (
   const data = await ok.json();
   assert.equal(data.titles.length, 2);
   assert.equal(data.totals.published, 1);
+  assert.equal(data.public_uploads, false);
 
   const unset = await state.onRequestGet({
     env: { ...env, ADMIN_TOKENS: "" },
@@ -401,6 +406,143 @@ test("upload-url signs a blob under the right prefix", async () => {
     }),
   });
   assert.equal((await resumed.json()).blob, "incoming/abcdef1234567890/My-Film.mkv");
+});
+
+test("admin opens public MP4 uploads; a ticket creates only a draft", async () => {
+  const before = await uploadConfig.onRequestGet({env});
+  assert.equal((await before.json()).uploads_open, false);
+
+  const closed = await publicUploadUrl.onRequestPost({
+    env,
+    request: req("/api/upload-url", {
+      method: "POST",
+      headers: { "content-type": "application/json", "cf-connecting-ip": "10.9.0.1" },
+      body: JSON.stringify({ filename: "closed.mp4", size: 10, content_type: "video/mp4" }),
+    }),
+  });
+  assert.equal(closed.status, 403);
+  assert.equal((await closed.json()).error, "uploads_closed");
+
+  const noAuth = await adminSettings.onRequestPost({
+    env,
+    request: req("/api/admin/settings", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ allow_public_uploads: true }),
+    }),
+  });
+  assert.equal(noAuth.status, 401);
+
+  const opened = await adminSettings.onRequestPost({
+    env,
+    request: admin("/api/admin/settings", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ allow_public_uploads: true }),
+    }),
+  });
+  assert.equal(opened.status, 200);
+  assert.equal((await opened.json()).allow_public_uploads, true);
+  assert.equal((await (await uploadConfig.onRequestGet({env})).json()).uploads_open, true);
+
+  const bad = await publicUploadUrl.onRequestPost({
+    env,
+    request: req("/api/upload-url", {
+      method: "POST",
+      headers: { "content-type": "application/json", "cf-connecting-ip": "10.9.0.2" },
+      body: JSON.stringify({ filename: "film.mkv", size: 10, content_type: "video/x-matroska" }),
+    }),
+  });
+  assert.equal(bad.status, 400);
+  assert.equal((await bad.json()).error, "mp4_only");
+
+  const signed = await publicUploadUrl.onRequestPost({
+    env,
+    request: req("/api/upload-url", {
+      method: "POST",
+      headers: { "content-type": "application/json", "cf-connecting-ip": "10.9.0.3" },
+      body: JSON.stringify({
+        kind: "video",
+        filename: "Public Film.mp4",
+        size: 4321,
+        content_type: "video/mp4",
+        resume_key: "abcdef1234567890",
+      }),
+    }),
+  });
+  assert.equal(signed.status, 200);
+  const slot = await signed.json();
+  assert.match(slot.ticket, /^[0-9a-f]{32}$/);
+  assert.equal(slot.blob, "v1/abcdef1234567890/Public-Film.mp4");
+  const slotUrl = new URL(slot.uploadUrl);
+  assert.equal(slotUrl.searchParams.get("sp"), "cw");
+  assert.ok(slotUrl.searchParams.get("sig"));
+
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async (url, init) => {
+    assert.equal(init?.method, "HEAD");
+    assert.match(String(url), /\/v1\/abcdef1234567890\/Public-Film\.mp4$/);
+    return new Response(null, {
+      status: 200,
+      headers: { "content-type": "video/mp4", "content-length": "4321" },
+    });
+  };
+  let created;
+  try {
+    const res = await publicUploads.onRequestPost({
+      env,
+      request: req("/api/uploads", {
+        method: "POST",
+        headers: { "content-type": "application/json", "cf-connecting-ip": "10.9.0.3" },
+        body: JSON.stringify({
+          ticket: slot.ticket,
+          name: "Public Film",
+          description: "From a visitor.",
+          year: 2026,
+          quality: 1080,
+          duration: 42,
+        }),
+      }),
+    });
+    assert.equal(res.status, 201);
+    created = (await res.json()).title;
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+
+  assert.equal(created.status, "draft");
+  assert.equal(created.title, "Public Film");
+  assert.equal(created.sources.length, 1);
+  assert.equal(created.sources[0].quality, 1080);
+  assert.equal(created.sources[0].size, 4321);
+  assert.equal(created.sources[0].status, "ready");
+  assert.match(created.sources[0].url, /^https:\/\/acct\.blob\.core\.windows\.net\/movies\/v1\/abcdef1234567890\/Public-Film\.mp4$/);
+
+  const reused = await publicUploads.onRequestPost({
+    env,
+    request: req("/api/uploads", {
+      method: "POST",
+      headers: { "content-type": "application/json", "cf-connecting-ip": "10.9.0.3" },
+      body: JSON.stringify({ ticket: slot.ticket, name: "Again" }),
+    }),
+  });
+  assert.equal(reused.status, 403);
+  assert.equal((await reused.json()).error, "bad_ticket");
+
+  const publicLibrary = await (await library.onRequestGet({env})).json();
+  assert.equal(publicLibrary.titles.some((t) => t.id === created.id), false);
+
+  const closedAgain = await adminSettings.onRequestPost({
+    env,
+    request: admin("/api/admin/settings", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ allow_public_uploads: false }),
+    }),
+  });
+  assert.equal(closedAgain.status, 200);
+  assert.equal((await (await uploadConfig.onRequestGet({env})).json()).uploads_open, false);
+  assert.equal((await (await state.onRequestGet({ env, request: admin("/api/admin/state") })).json()).public_uploads, false);
 });
 
 test("transcode queue claims a job, then attaches the finished MP4", async () => {
