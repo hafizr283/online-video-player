@@ -7,12 +7,19 @@
  */
 
 export const PUBLIC_UPLOADS_KEY = "allow_public_uploads";
+export const PUBLIC_UPLOAD_MODE_KEY = "public_upload_mode";
+export const PUBLIC_UPLOAD_MODES = new Set(["draft", "publish"]);
 
-export async function publicUploadsEnabled(env) {
-  const row = await env.DB.prepare(
-    "SELECT value FROM settings WHERE key = ?",
-  ).bind(PUBLIC_UPLOADS_KEY).first();
-  return row?.value === "1";
+/** Read both public-upload settings in one round trip. */
+export async function publicUploadSettings(env) {
+  const rows = await env.DB.prepare(
+    "SELECT key, value FROM settings WHERE key IN (?, ?)",
+  ).bind(PUBLIC_UPLOADS_KEY, PUBLIC_UPLOAD_MODE_KEY).all();
+  const values = new Map((rows.results || []).map((row) => [row.key, row.value]));
+  return {
+    open: values.get(PUBLIC_UPLOADS_KEY) === "1",
+    mode: values.get(PUBLIC_UPLOAD_MODE_KEY) === "publish" ? "publish" : "draft",
+  };
 }
 
 export async function setPublicUploads(env, enabled) {
@@ -22,4 +29,13 @@ export async function setPublicUploads(env, enabled) {
      ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
   ).bind(PUBLIC_UPLOADS_KEY, value).run();
   return enabled;
+}
+
+export async function setPublicUploadMode(env, mode) {
+  const value = PUBLIC_UPLOAD_MODES.has(mode) ? mode : "draft";
+  await env.DB.prepare(
+    `INSERT INTO settings (key, value) VALUES (?, ?)
+     ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
+  ).bind(PUBLIC_UPLOAD_MODE_KEY, value).run();
+  return value;
 }

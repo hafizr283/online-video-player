@@ -302,6 +302,7 @@ test("admin state requires a bearer token; unset token config is a 404", async (
   assert.equal(data.titles.length, 2);
   assert.equal(data.totals.published, 1);
   assert.equal(data.public_uploads, false);
+  assert.equal(data.public_upload_mode, "draft");
 
   const unset = await state.onRequestGet({
     env: { ...env, ADMIN_TOKENS: "" },
@@ -408,7 +409,7 @@ test("upload-url signs a blob under the right prefix", async () => {
   assert.equal((await resumed.json()).blob, "incoming/abcdef1234567890/My-Film.mkv");
 });
 
-test("admin opens public MP4 uploads; a ticket creates only a draft", async () => {
+test("admin chooses whether public MP4 uploads become drafts or publish immediately", async () => {
   const before = await uploadConfig.onRequestGet({env});
   assert.equal((await before.json()).uploads_open, false);
 
@@ -442,8 +443,23 @@ test("admin opens public MP4 uploads; a ticket creates only a draft", async () =
     }),
   });
   assert.equal(opened.status, 200);
-  assert.equal((await opened.json()).allow_public_uploads, true);
-  assert.equal((await (await uploadConfig.onRequestGet({env})).json()).uploads_open, true);
+  const openedData = await opened.json();
+  assert.equal(openedData.allow_public_uploads, true);
+  assert.equal(openedData.public_upload_mode, "draft");
+  const openConfig = await (await uploadConfig.onRequestGet({env})).json();
+  assert.equal(openConfig.uploads_open, true);
+  assert.equal(openConfig.upload_mode, "draft");
+
+  const badMode = await adminSettings.onRequestPost({
+    env,
+    request: admin("/api/admin/settings", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ public_upload_mode: "sometimes" }),
+    }),
+  });
+  assert.equal(badMode.status, 400);
+  assert.equal((await badMode.json()).error, "bad_mode");
 
   const bad = await publicUploadUrl.onRequestPost({
     env,
@@ -475,6 +491,7 @@ test("admin opens public MP4 uploads; a ticket creates only a draft", async () =
   assert.match(slot.ticket, /^[0-9a-f]{32}$/);
   assert.match(slot.blob, /^v1\/[0-9a-f]{12}\/Public-Film\.mp4$/);
   assert.doesNotMatch(slot.blob, /abcdef1234567890/);
+  assert.equal(slot.upload_mode, "draft");
   const slotUrl = new URL(slot.uploadUrl);
   assert.equal(slotUrl.searchParams.get("sp"), "cw");
   assert.ok(slotUrl.searchParams.get("sig"));
@@ -532,6 +549,79 @@ test("admin opens public MP4 uploads; a ticket creates only a draft", async () =
 
   const publicLibrary = await (await library.onRequestGet({env})).json();
   assert.equal(publicLibrary.titles.some((t) => t.id === created.id), false);
+
+  const modeChanged = await adminSettings.onRequestPost({
+    env,
+    request: admin("/api/admin/settings", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ public_upload_mode: "publish" }),
+    }),
+  });
+  assert.equal(modeChanged.status, 200);
+  const modeData = await modeChanged.json();
+  assert.equal(modeData.allow_public_uploads, true);
+  assert.equal(modeData.public_upload_mode, "publish");
+
+  const settingsGet = await adminSettings.onRequestGet({
+    env,
+    request: admin("/api/admin/settings"),
+  });
+  assert.equal(settingsGet.status, 200);
+  const settingsData = await settingsGet.json();
+  assert.equal(settingsData.allow_public_uploads, true);
+  assert.equal(settingsData.public_upload_mode, "publish");
+
+  const publishSlotRes = await publicUploadUrl.onRequestPost({
+    env,
+    request: req("/api/upload-url", {
+      method: "POST",
+      headers: { "content-type": "application/json", "cf-connecting-ip": "10.9.0.5" },
+      body: JSON.stringify({
+        filename: "Published Film.mp4",
+        size: 777,
+        content_type: "video/mp4",
+      }),
+    }),
+  });
+  assert.equal(publishSlotRes.status, 200);
+  const publishSlot = await publishSlotRes.json();
+  assert.match(publishSlot.blob, /^v1\/[0-9a-f]{12}\/Published-Film\.mp4$/);
+  assert.equal(publishSlot.upload_mode, "publish");
+
+  const realFetch2 = globalThis.fetch;
+  globalThis.fetch = async (url, init) => {
+    assert.equal(init?.method, "HEAD");
+    assert.equal(String(url).endsWith(`/${publishSlot.blob}`), true);
+    return new Response(null, {
+      status: 200,
+      headers: { "content-type": "video/mp4", "content-length": "777" },
+    });
+  };
+  let published;
+  try {
+    const res = await publicUploads.onRequestPost({
+      env,
+      request: req("/api/uploads", {
+        method: "POST",
+        headers: { "content-type": "application/json", "cf-connecting-ip": "10.9.0.5" },
+        body: JSON.stringify({
+          ticket: publishSlot.ticket,
+          name: "Published Film",
+          quality: 720,
+          duration: 10,
+        }),
+      }),
+    });
+    assert.equal(res.status, 201);
+    published = (await res.json()).title;
+  } finally {
+    globalThis.fetch = realFetch2;
+  }
+
+  assert.equal(published.status, "published");
+  const publishedLibrary = await (await library.onRequestGet({env})).json();
+  assert.equal(publishedLibrary.titles.some((t) => t.id === published.id), true);
 
   const closedAgain = await adminSettings.onRequestPost({
     env,

@@ -1,5 +1,5 @@
 import { fail, int, json, randomHex, readJson, slugify } from "../_lib/http.js";
-import { publicUploadsEnabled } from "../_lib/settings.js";
+import { publicUploadSettings } from "../_lib/settings.js";
 import { publicBlobUrl } from "../_lib/azure.js";
 import { rowToTitle } from "../_lib/titles.js";
 
@@ -11,12 +11,13 @@ const QUALITIES = new Set([2160, 1080, 720, 480]);
  * Finish a public upload. The ticket was issued by /api/upload-url; it binds
  * the title to the exact blob that was signed, and it can be used once.
  *
- * The visitor gets a draft. Nothing appears in the catalogue until an admin
- * reviews it and publishes it, which keeps an open upload switch from becoming
- * an unreviewed public feed.
+ * The admin chooses whether the result is a draft or is published immediately.
+ * Draft is the default, so opening uploads does not silently turn the library
+ * into an unreviewed public feed.
  */
 export async function onRequestPost({ request, env }) {
-  if (!(await publicUploadsEnabled(env))) return fail(403, "uploads_closed");
+  const settings = await publicUploadSettings(env);
+  if (!settings.open) return fail(403, "uploads_closed");
 
   let body;
   try { body = await readJson(request, 8192); }
@@ -43,6 +44,7 @@ export async function onRequestPost({ request, env }) {
   const requestedQuality = Number(body.quality);
   const quality = QUALITIES.has(requestedQuality) ? requestedQuality : 720;
   const duration = Math.max(0, int(body.duration, 0)) || null;
+  const status = settings.mode === "publish" ? "published" : "draft";
 
   const publicUrl = publicBlobUrl(env, ticket.blob);
 
@@ -97,7 +99,7 @@ export async function onRequestPost({ request, env }) {
     `INSERT INTO titles
        (id, name, description, year, poster_url, subtitle_url, duration, size,
         status, views, categories, tags, sources, created_at, updated_at)
-     VALUES (?, ?, ?, ?, '', '', ?, ?, 'draft', 0, '[]', '[]', ?, ?, ?)`,
+     VALUES (?, ?, ?, ?, '', '', ?, ?, ?, 0, '[]', '[]', ?, ?, ?)`,
   ).bind(
     id,
     name,
@@ -105,6 +107,7 @@ export async function onRequestPost({ request, env }) {
     year,
     duration,
     Number(ticket.size) || null,
+    status,
     JSON.stringify([source]),
     now,
     now,
@@ -114,7 +117,9 @@ export async function onRequestPost({ request, env }) {
   return json({
     ok: true,
     title: rowToTitle(row),
-    pending: true,
-    message: "Upload received. An admin will review it before it is published.",
+    pending: status === "draft",
+    message: status === "draft"
+      ? "Upload received. An admin will review it before it is published."
+      : "Upload received and published.",
   }, { status: 201 });
 }

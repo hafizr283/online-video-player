@@ -19,7 +19,7 @@ const TOKEN_KEY = "fp_admin_token";
 let token = "";
 try { token = sessionStorage.getItem(TOKEN_KEY) || ""; } catch { /* storage blocked */ }
 
-let state = { titles: [], categories: [], comments: [], jobs: [], totals: {}, transcode: false, public_uploads: false };
+let state = { titles: [], categories: [], comments: [], jobs: [], totals: {}, transcode: false, public_uploads: false, public_upload_mode: "draft" };
 let picked = null; // { file, playable, duration, posterBlob, width, height }
 let customPoster = null; // Blob from the poster picker; it wins over the frame grab
 
@@ -209,17 +209,42 @@ function renderCategories() {
 function renderPublicUploads() {
   const status = $("public-upload-status");
   const button = $("public-upload-toggle");
-  if (!status || !button) return;
+  const mode = $("public-upload-mode");
+  if (!status || !button || !mode) return;
   const open = Boolean(state.public_uploads);
+  const publish = state.public_upload_mode === "publish";
   status.textContent = open
-    ? "On — anyone with the link can upload an MP4. New uploads arrive as drafts for you to review and publish."
+    ? (publish
+      ? "On — anyone with the link can upload an MP4. New uploads are published immediately."
+      : "On — anyone with the link can upload an MP4. New uploads arrive as drafts for you to review and publish.")
     : "Off — only an admin can upload. Turn this on to let anyone with the link upload an MP4.";
   status.className = "note" + (open ? " is-ok" : "");
   button.textContent = open ? "Turn off public uploads" : "Turn on public uploads";
   button.className = "btn" + (open ? " btn--danger" : " btn--primary");
   button.disabled = false;
   button.setAttribute("aria-pressed", String(open));
+  mode.value = publish ? "publish" : "draft";
+  mode.disabled = false;
 }
+
+$("public-upload-mode").addEventListener("change", async (event) => {
+  const select = event.target;
+  const previous = state.public_upload_mode;
+  select.disabled = true;
+  try {
+    const data = await api("/api/admin/settings", {
+      method: "POST",
+      body: { public_upload_mode: select.value },
+    });
+    state.public_upload_mode = data.public_upload_mode;
+    renderPublicUploads();
+  } catch (error) {
+    alert(error.message);
+    state.public_upload_mode = previous;
+    select.value = previous;
+    select.disabled = false;
+  }
+});
 
 $("public-upload-toggle").addEventListener("click", async () => {
   const button = $("public-upload-toggle");

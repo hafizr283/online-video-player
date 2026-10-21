@@ -1,6 +1,6 @@
 import { json } from "../../_lib/http.js";
 import { requireAdmin } from "../../_lib/auth.js";
-import { publicUploadsEnabled } from "../../_lib/settings.js";
+import { publicUploadSettings } from "../../_lib/settings.js";
 import { readySources, rowToTitle } from "../../_lib/titles.js";
 
 /** GET /api/admin/state — everything the admin page needs in one round trip. */
@@ -8,7 +8,7 @@ export async function onRequestGet({ request, env }) {
   const gate = await requireAdmin(request, env);
   if (!gate.ok) return gate.response;
 
-  const [titleRows, catRows, commentRows, jobRows, uploadsOpen] = await Promise.all([
+  const [titleRows, catRows, commentRows, jobRows, uploadSettings] = await Promise.all([
     env.DB.prepare("SELECT * FROM titles ORDER BY created_at DESC").all(),
     env.DB.prepare("SELECT * FROM categories ORDER BY sort, name").all(),
     env.DB.prepare(
@@ -17,7 +17,7 @@ export async function onRequestGet({ request, env }) {
         ORDER BY c.at DESC LIMIT 100`,
     ).all(),
     env.DB.prepare("SELECT * FROM transcode_jobs ORDER BY created_at DESC LIMIT 20").all(),
-    publicUploadsEnabled(env),
+    publicUploadSettings(env),
   ]);
 
   const titles = (titleRows.results || []).map(rowToTitle).map((t) => {
@@ -32,7 +32,8 @@ export async function onRequestGet({ request, env }) {
   return json({
     ok: true,
     transcode: Boolean(env.GH_REPO && env.GH_TOKEN),
-    public_uploads: uploadsOpen,
+    public_uploads: uploadSettings.open,
+    public_upload_mode: uploadSettings.mode,
     titles,
     categories: catRows.results || [],
     comments: commentRows.results || [],

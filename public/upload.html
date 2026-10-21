@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="theme-color" content="#0b0b0f">
 <meta name="robots" content="noindex, nofollow">
-<meta name="description" content="Upload an MP4 film to Fast Player for admin review.">
+<meta name="description" content="Upload an MP4 film to Fast Player.">
 <title>Upload a film — Fast Player</title>
 <link rel="stylesheet" href="/style/catalogue.css">
 <link rel="stylesheet" href="/style/admin.css">
@@ -24,7 +24,7 @@
   <div class="admin-head">
     <h1>Upload a film</h1>
     <span class="spacer"></span>
-    <span class="note">MP4 only · reviewed before publishing</span>
+    <span class="note">MP4 only · set by the admin</span>
   </div>
 
   <section id="closed" class="card" hidden>
@@ -36,7 +36,7 @@
   <section id="panel" hidden>
     <form id="upload-form" class="card" novalidate>
       <h2>Choose an MP4</h2>
-      <p class="note">Uploads are reviewed by an admin before they appear in the library. Use an MP4 that plays in your browser (H.264/AAC is the safest choice).</p>
+      <p id="policy-note" class="note">Uploads are reviewed by an admin before they appear in the library. Use an MP4 that plays in your browser (H.264/AAC is the safest choice).</p>
 
       <label class="field">MP4 file
         <input id="file" type="file" accept="video/mp4,.mp4" required>
@@ -75,6 +75,6 @@
 
 </main>
 
-<script type="module" src="/upload.js?v=1"></script>
+<script type="module" src="/upload.js?v=2"></script>
 </body>
 </html>

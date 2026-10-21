@@ -60,6 +60,12 @@
       <div class="card">
         <h2>Public uploads</h2>
         <p id="public-upload-status" class="note">Loading…</p>
+        <label class="field">When a visitor uploads
+          <select id="public-upload-mode" disabled>
+            <option value="draft">Save as a draft for review</option>
+            <option value="publish">Publish immediately</option>
+          </select>
+        </label>
         <div class="row-actions">
           <button id="public-upload-toggle" class="btn" type="button" disabled>Checking…</button>
           <a class="note" href="/upload" target="_blank" rel="noopener">Open public upload page</a>
@@ -137,6 +143,6 @@
 
 </main>
 
-<script type="module" src="/admin.js?v=5"></script>
+<script type="module" src="/admin.js?v=6"></script>
 </body>
 </html>

@@ -12,6 +12,7 @@ const $ = (id) => document.getElementById(id);
 const DEFAULT_MAX = 8 * 1024 * 1024 * 1024;
 
 let maxBytes = DEFAULT_MAX;
+let uploadMode = "draft";
 let picked = null;
 let busy = false;
 let probeSerial = 0;
@@ -69,9 +70,17 @@ function showPanel() {
   $("panel").hidden = false;
 }
 
-function showDone(title) {
-  $("done-note").textContent =
-    `"${title}" was uploaded and saved as a draft. An admin will review it before it appears in the library.`;
+function renderPolicy() {
+  $("policy-note").textContent = uploadMode === "publish"
+    ? "This upload will be published as soon as it finishes. Use an MP4 that plays in your browser (H.264/AAC is the safest choice)."
+    : "Uploads are reviewed by an admin before they appear in the library. Use an MP4 that plays in your browser (H.264/AAC is the safest choice).";
+}
+
+function showDone(title, status) {
+  const published = status === "published";
+  $("done-note").textContent = published
+    ? `"${title}" was uploaded and is now published.`
+    : `"${title}" was uploaded and saved as a draft. An admin will review it before it appears in the library.`;
   $("closed").hidden = true;
   $("panel").hidden = true;
   $("done").hidden = false;
@@ -185,6 +194,10 @@ $("upload-form").addEventListener("submit", async (event) => {
       size: file.size,
       content_type: "video/mp4",
     });
+    if (slot.upload_mode === "publish" || slot.upload_mode === "draft") {
+      uploadMode = slot.upload_mode;
+      renderPolicy();
+    }
 
     const started = Date.now();
     let lastShown = 0;
@@ -213,7 +226,7 @@ $("upload-form").addEventListener("submit", async (event) => {
 
     const savedTitle = created.title?.title || title;
     resetForm();
-    showDone(savedTitle);
+    showDone(savedTitle, created.title?.status);
   } catch (error) {
     if (error.status === 403 && error.message === "uploads_closed") {
       showClosed("Public uploads were closed while you were uploading. The file was not saved. An admin can reopen uploads.");
@@ -239,6 +252,8 @@ $("another").addEventListener("click", () => {
     const data = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
     maxBytes = Number(data.max_bytes) || DEFAULT_MAX;
+    uploadMode = data.upload_mode === "publish" ? "publish" : "draft";
+    renderPolicy();
     if (!data.uploads_open) {
       showClosed();
       return;

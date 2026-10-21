@@ -1,6 +1,6 @@
 import { fail, json, blobSafeName, randomHex, readJson } from "../_lib/http.js";
 import { ipHash } from "../_lib/auth.js";
-import { publicUploadsEnabled } from "../_lib/settings.js";
+import { publicUploadSettings } from "../_lib/settings.js";
 import {
   MAX_UPLOAD,
   PUBLIC_UPLOAD_HOUR_LIMIT,
@@ -21,7 +21,8 @@ import { blobSas, publicBlobUrl } from "../_lib/azure.js";
  * this blob. The browser never gets to name an arbitrary Azure URL.
  */
 export async function onRequestPost({ request, env }) {
-  if (!(await publicUploadsEnabled(env))) return fail(403, "uploads_closed");
+  const settings = await publicUploadSettings(env);
+  if (!settings.open) return fail(403, "uploads_closed");
 
   let body;
   try { body = await readJson(request, 4096); }
@@ -73,6 +74,7 @@ export async function onRequestPost({ request, env }) {
     name,
     uploadUrl,
     publicUrl: publicBlobUrl(env, blob),
+    upload_mode: settings.mode,
     expiresIn: 4 * 60 * 60,
   });
 }

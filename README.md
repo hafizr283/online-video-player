@@ -51,9 +51,9 @@ tests/             unit + in-memory D1 integration tests
   `ADMIN_TOKENS` configured means every admin route is 404. Eight wrong tokens
   from one address lock it for 15 minutes.
 - **Public uploads:** off by default. An admin turns them on from the Upload
-  tab. The public page accepts MP4 only, uses a single-use expiring ticket, is
-  rate-limited per address, and saves each upload as a **draft** for admin
-  review. Admin uploads keep the existing token gate and are unchanged.
+  tab and chooses **Save as a draft** or **Publish immediately**. The public
+  page accepts MP4 only, uses a single-use expiring ticket, and is rate-limited
+  per address. Admin uploads keep the existing token gate and are unchanged.
 - **Delete a title:** deletes the row **and its blobs**. Every failed delete is
   reported; nothing is silently claimed.
 - **Publish:** refused when no source is playable, so a dead card never reaches

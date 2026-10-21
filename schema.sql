@@ -78,6 +78,7 @@ CREATE TABLE IF NOT EXISTS settings (
 );
 
 INSERT OR IGNORE INTO settings (key, value) VALUES ('allow_public_uploads', '0');
+INSERT OR IGNORE INTO settings (key, value) VALUES ('public_upload_mode', 'draft');
 
 -- A public upload gets one short-lived ticket. The Worker builds the Azure URL
 -- from the ticket's blob path, so a client cannot point a draft at someone
