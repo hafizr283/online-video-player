@@ -16,6 +16,10 @@ hostname onto Pages.
 Read [`docs/SETUP.md`](docs/SETUP.md). It is the ordered checklist: D1, secrets,
 Azure CORS, deploy, migrate, optional transcoder, custom domain.
 
+The Wrangler config uses the project name `fast-player`. To deploy to an
+existing Pages project instead, add `--project-name <project>` to
+`wrangler pages deploy`; otherwise Wrangler creates the `fast-player` project.
+
 ## What runs where
 
 | Piece | Runs on | Notes |
