@@ -6,7 +6,7 @@
  * for an admin to review.
  */
 
-import { probeVideo, qualityForHeight, uploadInBlocks } from "./upload-core.js?v=1";
+import { probeVideo, qualityForHeight, uploadInBlocks } from "./upload-core.js?v=2";
 
 const $ = (id) => document.getElementById(id);
 const DEFAULT_MAX = 8 * 1024 * 1024 * 1024;

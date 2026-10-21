@@ -9,6 +9,15 @@
 const BLOCK = 8 * 1024 * 1024;
 const WORKERS = 3;
 
+/** Map a decoded frame height to the quality labels the catalogue uses. */
+export function qualityForHeight(height) {
+  const h = Number(height) || 0;
+  if (h >= 2000) return 2160;
+  if (h >= 1000) return 1080;
+  if (h >= 700) return 720;
+  return 480;
+}
+
 /** Read metadata (and a poster frame when the browser can decode the file). */
 export async function probeVideo(file) {
   const url = URL.createObjectURL(file);

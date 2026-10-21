@@ -11,7 +11,7 @@
  * and the GitHub Actions transcoder turns it into an MP4.
  */
 
-import { probeVideo, putWithRetry, resumeKeyFor, uploadInBlocks } from "./upload-core.js?v=1";
+import { probeVideo, putWithRetry, resumeKeyFor, uploadInBlocks } from "./upload-core.js?v=2";
 
 const $ = (id) => document.getElementById(id);
 const TOKEN_KEY = "fp_admin_token";

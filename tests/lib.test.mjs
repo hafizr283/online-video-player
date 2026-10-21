@@ -4,6 +4,7 @@ import { buildConfig, cardOf, obfuscate, readySources, rowToTitle } from "../fun
 import { cleanSource } from "../functions/_lib/admin.js";
 import { blobSas, publicBlobUrl } from "../functions/_lib/azure.js";
 import { isMp4Upload, qualityForHeight } from "../functions/_lib/uploads.js";
+import { qualityForHeight as browserQualityForHeight } from "../public/upload-core.js";
 
 /** The player's own decoder, copied from public/style/fp-details-player.js. */
 function decode(payload, seed, rounds) {
@@ -122,4 +123,9 @@ test("public uploads accept only MP4 names and map frame height to a quality", (
   assert.equal(qualityForHeight(1080), 1080);
   assert.equal(qualityForHeight(720), 720);
   assert.equal(qualityForHeight(360), 480);
+
+  // The public page imports this from upload-core.js; a missing export breaks
+  // the whole module before the upload form can appear.
+  assert.equal(browserQualityForHeight(1080), 1080);
+  assert.equal(browserQualityForHeight(360), 480);
 });
