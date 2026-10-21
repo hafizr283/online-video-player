@@ -6,8 +6,8 @@
  * knows how categories are resolved), so a movie added through the admin shows
  * up everywhere with no extra wiring here.
  */
-const API = "/api/catalogue.json";
-const categoryApi = (id) => `/api/category/${encodeURIComponent(id)}.json`;
+const API = "/api/library";
+const categoryApi = (id) => `/api/category/${encodeURIComponent(id)}`;
 
 const esc = (s) =>
   String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
@@ -41,7 +41,7 @@ const metaLine = (t) => [
 // bar on a card cost no server work and no account. Everything here is optional:
 // a visitor with storage blocked just sees the ordinary shelf.
 // ---------------------------------------------------------------------------
-const POS_PREFIX = "mlbd_pos:";
+const POS_PREFIX = "fp_pos:";
 let progress = new Map();          // title id -> { t, d, at }
 
 function readProgress() {
@@ -215,7 +215,7 @@ async function renderBrowse(root) {
 
 async function renderCategory(root) {
   let meta = null;
-  try { meta = JSON.parse(document.getElementById("mlbdCategoryMeta").textContent); } catch { /* required */ }
+  try { meta = JSON.parse(document.getElementById("fpCategoryMeta").textContent); } catch { /* required */ }
   if (!meta) {
     root.innerHTML = '<p class="empty">This page is missing its category.</p>';
     return;
@@ -247,12 +247,12 @@ ${data.category.description ? `<p class="cat-desc">${esc(data.category.descripti
 
 async function renderDetail() {
   let current = null;
-  const metaEl = document.getElementById("mlbdTitleMeta");
+  const metaEl = document.getElementById("fpTitleMeta");
   try { current = JSON.parse(metaEl.textContent); } catch { /* meta is optional */ }
 
   progress = readProgress();
 
-  if (current) document.title = `${current.title} — MovieLinkBD`;
+  if (current) document.title = `${current.title} — Fast Player`;
 
   const metaHost = document.getElementById("title-meta-root");
   const moreRoot = document.getElementById("more-titles");
@@ -294,6 +294,6 @@ if (browseRoot) renderBrowse(browseRoot);
 const categoryRoot = document.getElementById("category-root");
 if (categoryRoot) renderCategory(categoryRoot);
 
-if (document.getElementById("mlbdTitleMeta")) renderDetail();
+if (document.getElementById("fpTitleMeta")) renderDetail();
 
 export { cardHtml, rowHtml, chipBarHtml };

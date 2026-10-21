@@ -1,62 +1,32 @@
 /**
- * Admin UI: add, edit and remove movies, manage categories, upload files.
+ * Cloudflare admin.
  *
- * The server owns every decision that matters - ids, slugs, validation,
- * atomicity - so this file is deliberately thin: it collects input, calls the
- * API, and renders what came back. Anything the server rejected is shown as
- * returned rather than re-guessed here.
+ * The token lives in sessionStorage for this tab. Every request carries it in an
+ * Authorization header (never a query string), and the same presence tells the
+ * player not to count the owner's own previews as views.
+ *
+ * Uploads go from this browser straight to Azure Blob with a short-lived SAS:
+ * the Pages Function only signs, it never carries the bytes. A file a browser
+ * can play is published as-is; anything else goes to the private incoming/ area
+ * and the GitHub Actions transcoder turns it into an MP4.
  */
-const TOKEN_KEY = "mlbd_admin_token";
 
 const $ = (id) => document.getElementById(id);
-const esc = (s) =>
-  String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+const TOKEN_KEY = "fp_admin_token";
+const BLOCK = 8 * 1024 * 1024;
+const WORKERS = 3;
 
-let token = sessionStorage.getItem(TOKEN_KEY) || "";
-let state = null;          // last /api/admin/state
-let draftCategories = [];  // ids currently ticked in the editor
+let token = "";
+try { token = sessionStorage.getItem(TOKEN_KEY) || ""; } catch { /* storage blocked */ }
 
-// ---- transport --------------------------------------------------------------
-async function api(path, { method = "GET", body, headers = {} } = {}) {
-  const res = await fetch(path, {
-    method,
-    cache: "no-store",
-    headers: { "X-Admin-Token": token, ...(body ? { "Content-Type": "application/json" } : {}), ...headers },
-    body: body ? JSON.stringify(body) : undefined,
-  });
-  let data = null;
-  try { data = await res.json(); } catch { /* empty body */ }
-  if (res.status === 401) {
-    lock("That token was not accepted.");
-    throw new Error("unauthorised");
-  }
-  return { status: res.status, ok: res.ok, data: data || {} };
-}
+let state = { titles: [], categories: [], comments: [], jobs: [], totals: {}, transcode: false };
+let picked = null; // { file, playable, duration, posterBlob }
+let customPoster = null; // Blob from the poster picker; it wins over the frame grab
 
-const toast = (msg, kind = "ok") => {
-  const el = $("toast");
-  el.textContent = msg;
-  el.className = `toast is-visible ${kind === "err" ? "is-err" : ""}`;
-  clearTimeout(toast.timer);
-  toast.timer = setTimeout(() => { el.className = "toast"; }, 4200);
-};
+const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({
+  "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
+}[c]));
 
-const showError = (el, errors) => {
-  const list = Array.isArray(errors) ? errors : [errors];
-  el.innerHTML = list.map((e) => `<span>${esc(e)}</span>`).join("");
-  el.hidden = false;
-};
-
-const bytes = (n) => {
-  if (!n) return "0 B";
-  const units = ["B", "KB", "MB", "GB"];
-  let i = 0;
-  let v = n;
-  while (v >= 1024 && i < units.length - 1) { v /= 1024; i++; }
-  return `${v < 10 && i > 0 ? v.toFixed(1) : Math.round(v)} ${units[i]}`;
-};
-
-/** 950 -> 950, 12,400 -> 12K, 1,240,000 -> 1.2M; the admin reads numbers fast. */
 const count = (n) => {
   const v = Number(n) || 0;
   if (v < 1000) return String(v);
@@ -64,891 +34,634 @@ const count = (n) => {
   return `${(v / 1000000).toFixed(1).replace(/\.0$/, "")}M`;
 };
 
-// ---- gate -------------------------------------------------------------------
-function lock(message) {
-  sessionStorage.removeItem(TOKEN_KEY);
-  token = "";
-  $("app").hidden = true;
-  $("gate").hidden = false;
-  const err = $("gate-err");
-  if (message) { err.textContent = message; err.hidden = false; } else { err.hidden = true; }
-  $("gate-token").focus();
+const bytes = (n) => {
+  if (!n) return "0 B";
+  const units = ["B", "KB", "MB", "GB"];
+  let i = 0;
+  let v = Number(n);
+  while (v >= 1024 && i < units.length - 1) { v /= 1024; i++; }
+  return `${v < 10 && i > 0 ? v.toFixed(1) : Math.round(v)} ${units[i]}`;
+};
+
+const hhmm = (seconds) => {
+  const total = Math.max(0, Math.round(Number(seconds) || 0));
+  const h = Math.floor(total / 3600);
+  const m = Math.floor((total % 3600) / 60);
+  const s = total % 60;
+  if (h) return `${h}h ${m}m`;
+  if (m) return `${m}m ${s}s`;
+  return `${s}s`;
+};
+
+const note = (el, message, kind = "") => {
+  el.textContent = message || "";
+  el.className = "note" + (kind ? ` is-${kind}` : "");
+};
+
+// ---------------------------------------------------------------------------
+// API
+// ---------------------------------------------------------------------------
+async function api(path, { method = "GET", body } = {}) {
+  const res = await fetch(path, {
+    method,
+    cache: "no-store",
+    headers: {
+      authorization: `Bearer ${token}`,
+      ...(body ? { "content-type": "application/json" } : {}),
+    },
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  if (res.status === 401 || res.status === 429) {
+    lock(res.status === 429 ? "Too many wrong attempts. Wait 15 minutes." : "That token was not accepted.");
+    throw new Error("unauthorized");
+  }
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+  return data;
 }
 
-$("gate-form").addEventListener("submit", async (e) => {
-  e.preventDefault();
-  token = $("gate-token").value.trim();
-  if (!token) return;
-  const r = await api("/api/admin/state").catch(() => null);
-  if (!r || !r.ok) return; // api() already locked on 401
-  sessionStorage.setItem(TOKEN_KEY, token);
-  $("gate").hidden = true;
-  $("app").hidden = false;
-  state = r.data;
-  renderAll();
+// ---------------------------------------------------------------------------
+// Sign in / out
+// ---------------------------------------------------------------------------
+function lock(message = "") {
+  token = "";
+  try { sessionStorage.removeItem(TOKEN_KEY); } catch { /* ignore */ }
+  $("app").hidden = true;
+  $("login").hidden = false;
+  if (message) note($("login-note"), message, "error");
+  $("token").focus();
+}
+
+$("login-form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const candidate = $("token").value.trim();
+  if (!candidate) return;
+  token = candidate;
+  note($("login-note"), "Checking…");
+  try {
+    await loadState();
+    try { sessionStorage.setItem(TOKEN_KEY, token); } catch { /* ignore */ }
+    $("login").hidden = true;
+    $("app").hidden = false;
+    note($("login-note"), "");
+  } catch (error) {
+    lock("That token was not accepted.");
+  }
 });
 
-// ---- rendering --------------------------------------------------------------
-function renderAll() {
-  if (!state) return;
-  const manifest = state.titles.filter((t) => !t.builtin);
-  $("app-sub").textContent =
-    `${state.titles.length} title${state.titles.length === 1 ? "" : "s"} · ${manifest.length} managed here · ` +
-    `${state.files.length} media file${state.files.length === 1 ? "" : "s"} · ` +
-    `${count((state.views && state.views.total) || 0)} view${((state.views && state.views.total) || 0) === 1 ? "" : "s"}`;
-  $("count-hint").textContent = `${state.titles.length} total`;
-  $("orphan-hint").textContent = state.orphans.length
-    ? `${state.orphans.length} not used by any movie`
-    : "every file is used";
-  renderTitles();
-  renderFiles();
-  renderAzure();
-  renderDiagnostics();
-  renderCategoryPicker();
+$("logout").addEventListener("click", () => lock());
 
-  // The switch only exists where it can act.
-  $("auto-azure").hidden = !azureReady();
+// ---------------------------------------------------------------------------
+// State
+// ---------------------------------------------------------------------------
+async function loadState() {
+  state = await api("/api/admin/state");
+  $("app-sub").textContent = `${state.totals.titles} titles · ${state.totals.published} published · ` +
+    `${count(state.totals.views)} views · ${state.totals.pending_jobs} converting`;
+  renderTitles();
+  renderComments();
+  renderJobs();
+  renderCategories();
+  renderTargets();
 }
 
 function renderTitles() {
   const host = $("titles");
-  const azure = state.azure || {};
-  const canPublish = azure.configured && azure.scope === "container";
+  if (!state.titles.length) {
+    host.innerHTML = '<p class="note">No titles yet. Add one from the Upload tab.</p>';
+    return;
+  }
   host.innerHTML = state.titles.map((t) => {
-    const catChips = t.categories.map((id) => {
-      const c = state.categories.find((x) => x.id === id);
-      return `<span class="chip chip--cat">${esc(c ? c.name : id)}</span>`;
-    }).join("");
-    const allRemote = t.source_count > 0 && t.local_files === 0;
-    const cloud = t.builtin
-      ? ""
-      : allRemote
-        ? '<span class="badge badge--cloud" title="Every file of this film is on Blob storage">on Azure</span>'
-        : azure.only
-          ? `<span class="badge badge--warn" title="Azure-only mode: this film will not play until it is published">${t.local_files} file${t.local_files === 1 ? "" : "s"} local</span>`
-          : "";
-    return `<article class="admin-title${t.builtin ? " is-builtin" : ""}">
-      <img class="admin-title__art" src="${esc(t.poster)}" alt="" width="80" height="120" loading="lazy">
-      <div class="admin-title__body">
-        <div class="admin-title__name">
-          ${esc(t.title)}
-          ${t.builtin ? '<span class="badge">built-in</span>' : ""}
-          ${cloud}
-        </div>
-        <div class="admin-title__meta">
-          ${[t.year, (t.qualities || []).map((q) => `${q}p`).join(" · "), `${t.source_count} source${t.source_count === 1 ? "" : "s"}`,
-            Number(t.views) > 0 ? `${count(t.views)} view${Number(t.views) === 1 ? "" : "s"}` : ""]
-            .filter(Boolean).map(esc).join(" · ")}
-        </div>
-        <div class="chips">${catChips}</div>
-        <div class="admin-title__links">
-          <a href="/movie/${esc(t.id)}" target="_blank" rel="noopener">Open</a>
-          <span class="mono">/movie/${esc(t.id)}</span>
-        </div>
+    const poster = t.poster || `/poster/${encodeURIComponent(t.id)}.svg`;
+    const pending = (t.sources || []).some((s) => s.status === "pending");
+    const qualities = (t.qualities || []).map((q) => `${q}p`).join(" · ");
+    const meta = [
+      t.year,
+      qualities,
+      `${t.ready_sources} file${t.ready_sources === 1 ? "" : "s"}`,
+      `${count(t.views)} view${Number(t.views) === 1 ? "" : "s"}`,
+    ].filter(Boolean).join(" · ");
+    return `<div class="title-row">
+      <img src="${esc(poster)}" alt="" loading="lazy">
+      <div>
+        <h3>${esc(t.title)}
+          <span class="badge badge--${t.status === "published" ? "pub" : "draft"}">${t.status}</span>
+          ${pending ? '<span class="badge badge--job">converting</span>' : ""}
+        </h3>
+        <div class="meta">${esc(meta)}</div>
       </div>
-      <div class="admin-title__actions">
-        ${t.builtin
-          ? '<span class="hint">read-only</span>'
-          : `${canPublish && t.local_files > 0
-              ? `<button class="btn btn--ghost" type="button" data-azure-title="${esc(t.id)}"
-                   title="Upload every file of this film, master and rendition, so none of it streams from this PC">Send film to Azure</button>`
-              : ""}
-             <button class="btn btn--ghost" type="button" data-edit="${esc(t.id)}">Edit</button>
-             <button class="btn btn--danger" type="button" data-del="${esc(t.id)}">Remove</button>`}
+      <div class="row-actions">
+        <button class="btn" type="button" data-act="toggle" data-id="${esc(t.id)}">
+          ${t.status === "published" ? "Unpublish" : "Publish"}
+        </button>
+        <button class="btn btn--danger" type="button" data-act="delete" data-id="${esc(t.id)}">Delete</button>
       </div>
-    </article>`;
+    </div>`;
   }).join("");
 }
 
-function renditionOf(name) {
-  const height = state.conversion && state.conversion.rendition;
-  if (!height || !/\.mp4$/i.test(name)) return null;
-  const stem = name.replace(/\.mp4$/i, "");
-  if (stem.endsWith(`-${height}`)) return null;          // already the small copy
-  const target = `${stem}-${height}.mp4`;
-  return state.files.some((f) => f.name === target) ? null : { height, target };
-}
-
-function renderFiles() {
-  const host = $("files");
-  const azure = state.azure || {};
-  const canPublish = azure.configured && azure.scope === "container";
-  host.innerHTML = state.files.length
-    ? state.files.map((f) => {
-        const make = renditionOf(f.name);
-        const publishable = canPublish && !f.remote && /\.(mp4|m4v|mov|webm)$/i.test(f.name);
-        const remote = f.remote
-          ? `<a class="file-row__cloud" href="${esc(f.remote)}" target="_blank" rel="noreferrer"
-               title="Viewers stream this copy from Blob storage">Azure</a>
-             <button class="btn btn--ghost file-row__act" type="button" data-azure-off="${esc(f.name)}"
-               title="Serve this film from this PC again; the published blob is left in place">use local</button>`
-          : "";
-        return `<div class="file-row${f.referenced ? "" : " is-orphan"}">
-        <span class="file-row__name mono">${esc(f.name)}</span>
-        <span class="file-row__size">${bytes(f.bytes)}</span>
-        <span class="file-row__state">${f.referenced ? "used" : "unused"}</span>
-        ${remote}
-        ${publishable ? `<button class="btn btn--ghost file-row__act" type="button" data-azure="${esc(f.name)}"
-          title="Upload to Blob storage and stream it from Azure">Send to Azure</button>` : ""}
-        ${make ? `<button class="btn btn--ghost file-row__act" type="button" data-rendition="${esc(f.name)}"
-          title="Make a ${make.height}p copy for slow connections">+${make.height}p</button>` : ""}
-      </div>`;
-      }).join("")
-    : '<p class="empty">No media files yet.</p>';
-}
-
-/** What Blob storage is, whether this run can write to it, and where playback comes from. */
-function renderAzure() {
-  const a = state.azure || {};
-  const hint = $("azure-hint");
-  const only = a.only
-    ? " Azure-only is on: a film streams from Blob storage or not at all."
-    : "";
-  if (!a.configured) {
-    hint.hidden = false;
-    hint.textContent = a.container
-      ? `Blob storage is set up at ${a.container} but has no key yet. Paste a container SAS into AZURE_SAS and restart.${only || " Films stay on this PC meanwhile."}`
-      : `Blob storage is not configured. Set AZURE_CONTAINER_URL and AZURE_SAS, then restart.${only || " Films stay on this PC meanwhile."}`;
+function renderComments() {
+  const host = $("comments");
+  if (!state.comments.length) {
+    host.innerHTML = '<p class="note">No comments yet.</p>';
     return;
   }
-  hint.hidden = false;
-  const scope = a.scope === "container"
-    ? ""
-    : " This SAS is signed for a single blob, so uploads are refused — generate a container SAS.";
-  const exp = a.expires ? ` Token expires ${a.expires}.` : "";
-  hint.textContent =
-    `Publishing to ${a.container}.${scope}${exp} A published film streams straight from Azure; the local copy stays.${only}`;
+  host.innerHTML = state.comments.map((c) => `
+    <div class="comment-row${c.hidden ? " is-hidden" : ""}">
+      <div class="who">${esc(c.name)} · ${esc(c.title_name || c.title_id)} · ${new Date(c.at).toLocaleString()}</div>
+      <div>${esc(c.text)}</div>
+      ${c.hidden ? '<span class="note">hidden</span>' :
+        `<button class="btn" type="button" data-hide="${esc(c.id)}">Hide</button>`}
+    </div>`).join("");
 }
 
-function renderDiagnostics() {
-  const d = state.diagnostics;
-  const problems = [];
-  if (!d.manifest_present) problems.push("The library file does not exist yet — the first save creates it.");
-  for (const m of d.missing_files) problems.push(`Missing file: ${m.file} (source ${m.source} of ${m.title_id})`);
-  for (const s of d.duplicate_slugs) problems.push(`Duplicate media slug: ${s}`);
-  if (state.orphans.length) problems.push(`${state.orphans.length} media file(s) are not used by any title.`);
-
-  $("diag").hidden = problems.length === 0;
-  $("diag-body").innerHTML = problems.map((p) => `<p>${esc(p)}</p>`).join("");
-}
-
-function renderCategoryPicker() {
-  const host = $("cat-picker");
-  host.innerHTML = state.categories.map((c) => `
-    <label class="cat-tick">
-      <input type="checkbox" value="${esc(c.id)}"${draftCategories.includes(c.id) ? " checked" : ""}>
-      <span>${esc(c.name)}</span>
-      <em>${c.count}</em>
-    </label>`).join("");
-}
-
-// ---- editor -----------------------------------------------------------------
-const SOURCE_TEMPLATE = () => ({ file: "", quality: 720, cdn: 0, audio: "", best: false, name: "" });
-
-function sourceRow(src, i) {
-  const options = (selected) => state.files.map((f) =>
-    `<option value="${esc(f.name)}"${f.name === selected ? " selected" : ""}>${esc(f.name)}</option>`).join("");
-  const cdns = state.cdns.map((c) =>
-    `<option value="${state.cdns.indexOf(c)}"${state.cdns.indexOf(c) === Number(src.cdn) ? " selected" : ""}>${esc(c.provider)}${c.broken ? " (broken)" : ""}</option>`).join("");
-
-  return `<div class="src-row" data-i="${i}">
-    <label class="src-row__file">
-      <span>File</span>
-      <select data-f="file">
-        <option value="">— pick a file —</option>
-        ${options(src.file)}
-      </select>
-    </label>
-    <label><span>Quality</span><input data-f="quality" type="number" min="144" max="4320" step="1" value="${esc(src.quality)}"></label>
-    <label><span>Mirror</span><select data-f="cdn">${cdns}</select></label>
-    <label><span>Audio</span><input data-f="audio" type="text" maxlength="40" value="${esc(src.audio || "")}" placeholder="Hindi"></label>
-    <label class="src-row__best"><span>Best</span><input data-f="best" type="checkbox"${src.best ? " checked" : ""}></label>
-    <button class="btn btn--ghost" type="button" data-remove-src="${i}" aria-label="Remove this source">✕</button>
-  </div>`;
-}
-
-function renderSources(sources) {
-  $("src-rows").innerHTML = sources.map(sourceRow).join("");
-}
-
-const readSources = () => [...document.querySelectorAll("#src-rows .src-row")].map((row) => {
-  const get = (f) => row.querySelector(`[data-f="${f}"]`);
-  return {
-    file: get("file").value,
-    quality: Number(get("quality").value) || 0,
-    cdn: Number(get("cdn").value) || 0,
-    audio: get("audio").value.trim(),
-    best: get("best").checked,
-  };
-});
-
-/** The poster field is a path; showing it makes a typo or a missing file obvious. */
-function refreshPosterPreview() {
-  const img = $("poster-preview");
-  if (!img) return;
-  const value = $("f-poster").value.trim();
-  if (!value) { img.hidden = true; img.removeAttribute("src"); return; }
-  img.src = value;
-  img.hidden = false;
-}
-
-function openEditor(title) {
-  const editing = Boolean(title);
-  $("editor").hidden = false;
-  $("editor-title").textContent = editing ? `Edit ${title.title}` : "Add movie";
-  $("f-original-id").value = editing ? title.id : "";
-  $("f-key").value = state.key;
-  $("f-title").value = editing ? title.title : "";
-  $("f-id").value = editing ? title.id : "";
-  $("f-year").value = editing && title.year ? title.year : "";
-  $("f-poster").value = editing && title.raw && title.raw.poster ? title.raw.poster : "";
-  refreshPosterPreview();
-  $("f-description").value = editing && title.raw ? title.raw.description || "" : "";
-  $("f-tags").value = editing && title.raw ? (title.raw.tags || []).join(", ") : "";
-
-  draftCategories = editing ? [...title.categories] : [];
-  renderCategoryPicker();
-
-  const sources = editing && title.raw && Array.isArray(title.raw.sources)
-    ? title.raw.sources.map((s) => ({
-        file: s.file, quality: s.quality || 720, cdn: s.cdn || 0,
-        audio: s.audio || "", best: Boolean(s.best),
-      }))
-    : [SOURCE_TEMPLATE()];
-  renderSources(sources);
-
-  $("form-err").hidden = true;
-  $("editor").scrollIntoView({ behavior: "smooth", block: "start" });
-}
-
-function closeEditor() {
-  $("editor").hidden = true;
-  $("upload-progress").hidden = true;
-  $("upload-progress").value = 0;
-}
-
-$("new").addEventListener("click", () => openEditor(null));
-$("cancel").addEventListener("click", closeEditor);
-
-$("titles").addEventListener("click", async (e) => {
-  const editBtn = e.target.closest("[data-edit]");
-  if (editBtn) {
-    const t = state.titles.find((x) => x.id === editBtn.dataset.edit);
-    if (t) openEditor(t);
+function renderJobs() {
+  const host = $("jobs");
+  if (!state.jobs.length) {
+    host.innerHTML = '<p class="note">Nothing in the queue.</p>';
     return;
   }
-
-  const delBtn = e.target.closest("[data-del]");
-  if (!delBtn) return;
-  const id = delBtn.dataset.del;
-  const t = state.titles.find((x) => x.id === id);
-  // Files are kept on purpose, so say so rather than implying a full delete.
-  if (!confirm(`Remove "${t ? t.title : id}" from the library?\n\nIts video files are kept and will be listed as unused.`)) return;
-
-  const r = await api(`/api/admin/title?id=${encodeURIComponent(id)}&key=${encodeURIComponent(state.key)}`, { method: "DELETE" });
-  if (!r.ok) return toast(r.data.message || r.data.error || "Could not remove the movie", "err");
-  toast(`Removed ${id}. Files kept.`);
-  await refresh();
-});
-
-$("add-src").addEventListener("click", () => {
-  const sources = readSources();
-  sources.push(SOURCE_TEMPLATE());
-  renderSources(sources);
-});
-
-$("src-rows").addEventListener("click", (e) => {
-  const btn = e.target.closest("[data-remove-src]");
-  if (!btn) return;
-  const sources = readSources();
-  sources.splice(Number(btn.dataset.removeSrc), 1);
-  renderSources(sources.length ? sources : [SOURCE_TEMPLATE()]);
-});
-
-$("cat-picker").addEventListener("change", () => {
-  draftCategories = [...document.querySelectorAll("#cat-picker input:checked")].map((i) => i.value);
-});
-
-$("add-cat").addEventListener("click", async () => {
-  const name = $("f-new-cat").value.trim();
-  if (!name) return;
-  const id = name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "category";
-  if (!draftCategories.includes(id)) draftCategories.push(id);
-  if (!state.categories.some((c) => c.id === id)) {
-    state.categories.push({ id, name, count: 0, derived: true, order: 9999, url: `/category/${id}` });
-  }
-  $("f-new-cat").value = "";
-  renderCategoryPicker();
-  toast(`"${name}" will be created when you save.`);
-});
-
-// ---- upload -----------------------------------------------------------------
-const zone = $("upload-zone");
-const fileInput = $("upload-file");
-
-$("browse-file").addEventListener("click", () => fileInput.click());
-fileInput.addEventListener("change", () => { if (fileInput.files[0]) upload(fileInput.files[0]); });
-
-for (const ev of ["dragenter", "dragover"]) {
-  zone.addEventListener(ev, (e) => { e.preventDefault(); zone.classList.add("is-over"); });
-}
-for (const ev of ["dragleave", "drop"]) {
-  zone.addEventListener(ev, (e) => { e.preventDefault(); zone.classList.remove("is-over"); });
-}
-zone.addEventListener("drop", (e) => {
-  const file = e.dataTransfer?.files?.[0];
-  if (file) upload(file);
-});
-
-/** Below this a single POST is simpler; above it the edge would refuse the body. */
-const ONE_POST = 4 * 1024 * 1024;
-const UPLOAD_REMEMBER = "mlbd-upload";
-
-const chunkKey = (file) => `${file.name}|${file.size}|${file.lastModified}`;
-const remembered = () => { try { return JSON.parse(localStorage.getItem(UPLOAD_REMEMBER) || "null"); } catch { return null; } };
-const remember = (v) => {
-  try { v ? localStorage.setItem(UPLOAD_REMEMBER, JSON.stringify(v)) : localStorage.removeItem(UPLOAD_REMEMBER); }
-  catch { /* private mode */ }
-};
-
-/** One request. Fine for a clip; the edge refuses a film. */
-function uploadWhole(file, { title, quality, progress }) {
-  const qs = new URLSearchParams({ name: file.name, title, quality: String(quality) });
-  // XHR rather than fetch: it reports upload progress, which matters for a
-  // multi-gigabyte file and a silent-looking form.
-  return new Promise((resolve, reject) => {
-    const xhr = new XMLHttpRequest();
-    xhr.open("POST", `/api/admin/upload?${qs}`);
-    xhr.setRequestHeader("X-Admin-Token", token);
-    xhr.upload.addEventListener("progress", (e) => {
-      if (e.lengthComputable) progress.value = Math.round((e.loaded / e.total) * 100);
-    });
-    xhr.addEventListener("load", () => {
-      let data = {};
-      try { data = JSON.parse(xhr.responseText); } catch { /* ignore */ }
-      if (xhr.status === 200) resolve(data);
-      else if (xhr.status === 401) { lock("That token was not accepted."); reject(new Error("unauthorised")); }
-      else reject(new Error(data.message || (data.error === "too_large"
-        ? `File is larger than the ${bytes(state.limits.max_upload_bytes)} limit.`
-        : data.error || `HTTP ${xhr.status}`)));
-    });
-    xhr.addEventListener("error", () => reject(new Error("network error")));
-    xhr.send(file);
-  });
+  host.innerHTML = state.jobs.map((j) => `
+    <div class="comment-row">
+      <div class="who">${esc(j.status)} · ${esc(j.name)} · ${esc(String(j.quality))}p · attempt ${j.attempts}
+        ${j.error ? ` · <span class="note is-error">${esc(j.error)}</span>` : ""}</div>
+    </div>`).join("");
 }
 
-function postPiece(id, index, blob) {
-  return new Promise((resolve, reject) => {
-    const xhr = new XMLHttpRequest();
-    xhr.open("POST", `/api/admin/upload/chunk?id=${id}&index=${index}`);
-    xhr.setRequestHeader("X-Admin-Token", token);
-    xhr.addEventListener("load", () => {
-      let data = {};
-      try { data = JSON.parse(xhr.responseText); } catch { /* ignore */ }
-      if (xhr.status === 200) resolve(data);
-      else if (xhr.status === 401) { lock("That token was not accepted."); reject(new Error("unauthorised")); }
-      else reject(new Error(data.message || data.error || `HTTP ${xhr.status}`));
-    });
-    xhr.addEventListener("error", () => reject(new Error("network error")));
-    xhr.addEventListener("timeout", () => reject(new Error("timed out")));
-    xhr.send(blob);
-  });
+function renderTargets() {
+  const select = $("target");
+  const current = select.value;
+  select.innerHTML = '<option value="">— a new title —</option>' +
+    state.titles.map((t) => `<option value="${esc(t.id)}">${esc(t.title)} (${t.status})</option>`).join("");
+  // Re-rendering the list must not silently change what the admin picked.
+  if ([...select.options].some((o) => o.value === current)) select.value = current;
 }
 
-/**
- * Send a film in pieces the edge will accept.
- *
- * The session lives in localStorage, so closing the tab is not fatal: choosing
- * the same file again asks the server which pieces it already has and sends
- * only the rest.
- */
-async function uploadInChunks(file, { title, quality, progress, hint }) {
-  const key = chunkKey(file);
-  let session = remembered();
-  if (!session || session.key !== key) session = null;
+function renderCategories() {
+  const host = $("categories");
+  if (!state.categories.length) { host.innerHTML = ""; return; }
+  host.innerHTML = `<span>Categories</span><div class="row-actions">` + state.categories.map((c) => `
+    <label class="note"><input type="checkbox" name="cat" value="${esc(c.id)}"> ${esc(c.name)}</label>
+  `).join("") + "</div>";
+}
 
-  let info = null;
-  if (session) {
-    const known = await api(`/api/admin/upload/session?id=${session.id}`);
-    if (known.ok) info = known.data;
-    else session = null;
-  }
-  if (!session) {
-    const started = await api("/api/admin/upload/session", {
-      method: "POST",
-      body: { name: file.name, size: file.size, title, quality },
-    });
-    if (!started.ok) {
-      throw new Error(started.data.error === "too_large"
-        ? `File is larger than the ${bytes(state.limits.max_upload_bytes)} limit.`
-        : started.data.message || started.data.error || "the upload could not start");
-    }
-    session = { key, id: started.data.id };
-    remember(session);
-    info = started.data;
-  }
+$("titles").addEventListener("click", async (event) => {
+  const button = event.target.closest("button[data-act]");
+  if (!button) return;
+  const id = button.dataset.id;
+  const title = state.titles.find((t) => t.id === id);
+  if (!title) return;
 
-  const chunk = info.chunk || 32 * 1024 * 1024;
-  const expected = Math.ceil(file.size / chunk);
-  const have = new Set(info.received || []);
-  if (have.size) {
-    const doneBytes = [...have].reduce((a, i) => a + Math.min(chunk, file.size - i * chunk), 0);
-    hint.textContent = `Resuming ${file.name} at ${bytes(doneBytes)} of ${bytes(file.size)}…`;
-  }
-
-  for (let index = 0; index < expected; index++) {
-    if (have.has(index)) continue;
-    const start = index * chunk;
-    const blob = file.slice(start, Math.min(start + chunk, file.size));
-    for (let attempt = 1; ; attempt++) {
-      try { await postPiece(session.id, index, blob); break; }
-      catch (e) {
-        if (attempt >= 3) throw new Error(`piece ${index + 1} of ${expected} failed: ${e.message}`);
-        hint.textContent = `Piece ${index + 1}/${expected} failed — retrying (${attempt}/3)…`;
-        await new Promise((r) => setTimeout(r, 1500 * attempt));
+  button.disabled = true;
+  try {
+    if (button.dataset.act === "toggle") {
+      const next = title.status === "published" ? "draft" : "published";
+      await api(`/api/admin/titles/${encodeURIComponent(id)}`, { method: "PATCH", body: { status: next } });
+    } else {
+      if (!confirm(`Delete "${title.title}" and its video files? This cannot be undone.`)) {
+        button.disabled = false;
+        return;
+      }
+      const result = await api(`/api/admin/titles/${encodeURIComponent(id)}`, { method: "DELETE" });
+      if (result.failed_blobs?.length) {
+        alert(`Title deleted, but ${result.failed_blobs.length} blob(s) could not be removed:\n` +
+          result.failed_blobs.map((b) => `${b.blob}: ${b.error}`).join("\n"));
       }
     }
-    const done = Math.min(file.size, (index + 1) * chunk);
-    progress.value = Math.round((done / file.size) * 100);
-    hint.textContent = `Uploading ${file.name} — ${index + 1}/${expected} (${bytes(done)} of ${bytes(file.size)})`;
+    await loadState();
+  } catch (error) {
+    alert(error.message);
+    button.disabled = false;
   }
+});
 
-  hint.textContent = `All ${expected} pieces are here. Joining them…`;
-  const finished = await api(`/api/admin/upload/finish?id=${session.id}`, { method: "POST" });
-  remember(null);
-  if (!finished.ok) throw new Error(finished.data.message || finished.data.error || "the pieces could not be joined");
-  return finished.data;
+$("comments").addEventListener("click", async (event) => {
+  const id = event.target.dataset.hide;
+  if (!id) return;
+  event.target.disabled = true;
+  try {
+    await api(`/api/admin/comment?id=${encodeURIComponent(id)}`, { method: "DELETE" });
+    await loadState();
+  } catch (error) {
+    alert(error.message);
+    event.target.disabled = false;
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Tabs
+// ---------------------------------------------------------------------------
+document.querySelectorAll("[role=tab]").forEach((tab) => {
+  tab.addEventListener("click", () => {
+    document.querySelectorAll("[role=tab]").forEach((t) => t.setAttribute("aria-selected", String(t === tab)));
+    document.querySelectorAll(".panel").forEach((p) => p.classList.toggle("is-active", p.id === `tab-${tab.dataset.tab}`));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Upload: probe, poster frame, blocks, title
+// ---------------------------------------------------------------------------
+const fileInput = $("file");
+const posterInput = $("poster-file");
+const uploadBtn = $("upload");
+const bar = $("bar");
+const progress = $("progress");
+const uploadNote = $("upload-note");
+
+/**
+ * Read a chosen image and re-encode it as a JPEG no larger than 1000 px on the
+ * long side. The admin may hand us a 12 MP phone photo; the poster slot does not
+ * need it, and a smaller file uploads faster.
+ */
+async function preparePoster(file) {
+  const url = URL.createObjectURL(file);
+  try {
+    const image = await new Promise((resolve, reject) => {
+      const img = new Image();
+      img.onload = () => resolve(img);
+      img.onerror = () => reject(new Error("unreadable image"));
+      img.src = url;
+    });
+    const scale = Math.min(1, 1000 / Math.max(image.naturalWidth, image.naturalHeight));
+    const width = Math.max(1, Math.round(image.naturalWidth * scale));
+    const height = Math.max(1, Math.round(image.naturalHeight * scale));
+    const canvas = document.createElement("canvas");
+    canvas.width = width;
+    canvas.height = height;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) throw new Error("canvas unavailable");
+    ctx.drawImage(image, 0, 0, width, height);
+    return await new Promise((resolve, reject) => {
+      canvas.toBlob((blob) => blob ? resolve(blob) : reject(new Error("encode failed")), "image/jpeg", 0.86);
+    });
+  } finally {
+    URL.revokeObjectURL(url);
+  }
 }
 
-async function upload(file) {
-  const title = $("f-title").value.trim();
-  const progress = $("upload-progress");
-  const hint = $("upload-hint");
-  progress.hidden = false;
-  progress.value = 0;
-  hint.textContent = `Uploading ${file.name} (${bytes(file.size)})…`;
-
-  const quality = readSources().map((s) => Number(s.quality)).find((q) => q > 0) || 0;
-  const ctx = { title: title || "video", quality, progress, hint };
-
+posterInput.addEventListener("change", async () => {
+  const file = posterInput.files?.[0];
+  if (!file) return;
   try {
-    const result = file.size <= ONE_POST ? await uploadWhole(file, ctx) : await uploadInChunks(file, ctx);
+    customPoster = await preparePoster(file);
+    $("poster-preview").src = URL.createObjectURL(customPoster);
+    note(uploadNote, "Poster image ready. It will replace the captured frame.", "ok");
+  } catch {
+    customPoster = null;
+    posterInput.value = "";
+    note(uploadNote, "That image could not be read. Use a JPG or PNG.", "error");
+  }
+});
 
-    state.files.push({ name: result.file, bytes: result.bytes, referenced: false });
-    state.files.sort((a, b) => a.name.localeCompare(b.name));
+fileInput.addEventListener("change", async () => {
+  const file = fileInput.files?.[0];
+  picked = null;
+  uploadBtn.disabled = true;
+  if (customPoster) $("poster-preview").src = URL.createObjectURL(customPoster);
+  else $("poster-preview").removeAttribute("src");
+  note(uploadNote, "");
+  if (!file) return;
 
-    const sources = readSources();
-    const empty = sources.find((s) => !s.file);
-    if (empty) empty.file = result.file;
-    else sources.push({ ...SOURCE_TEMPLATE(), file: result.file, quality });
-    renderSources(sources);
-    renderFiles();
+  if (!file.size) { note(uploadNote, "That file is empty.", "error"); return; }
 
-    // A frame from this upload, if the server could take one. Only fills a
-    // field the person left blank: a chosen poster is never replaced.
-    if (result.poster && !$("f-poster").value.trim()) {
-      $("f-poster").value = result.poster;
-      $("f-poster").dispatchEvent(new Event("input", { bubbles: true }));
-    }
+  if (!$("name").value.trim()) {
+    $("name").value = file.name.replace(/\.[^.]+$/, "").replace(/[._]+/g, " ").trim();
+  }
 
-    // A stored file is not the same as a playable one.
-    const warning = Array.isArray(result.warnings) && result.warnings[0];
-    if (!warning) {
-      hint.textContent = `Stored as ${result.file}.`;
-      toast(`Uploaded ${result.file}`);
-      return;
-    }
+  note(uploadNote, "Reading the file…");
+  const probe = await probeVideo(file);
+  picked = { file, ...probe };
 
-    // Stored, but no browser can play it. Convert it here instead of sending
-    // the user off to find a different copy of the same film every time.
-    const conversion = result.conversion || {};
-    if (!conversion.available) {
-      hint.textContent = `${warning} Conversion needs ffmpeg on this PC (FFMPEG_PATH).`;
-      toast("Stored — but it will not play in a browser", "err");
-      return;
-    }
+  if (probe.posterBlob && !customPoster) {
+    $("poster-preview").src = URL.createObjectURL(probe.posterBlob);
+  }
 
-    hint.textContent = conversion.kind === "remux"
-      ? `Stored as ${result.file}. Fixing the container now — this is quick.`
-      : `Stored as ${result.file}. Converting to H.264 now — this can take a while.`;
-    toast(conversion.kind === "remux" ? "Remuxing to MP4…" : "Converting to MP4…");
+  if (probe.playable) {
+    note(uploadNote, `Ready · ${hhmm(probe.duration)} · this file plays in a browser, so it uploads as-is.`, "ok");
+  } else {
+    note(uploadNote, "This file does not play in a browser (MKV/HEVC is the usual reason). " +
+      "It will be uploaded and converted to MP4 in the background; that can take a while.", "");
+  }
+  uploadBtn.disabled = false;
+});
 
+async function probeVideo(file) {
+  const url = URL.createObjectURL(file);
+  const video = document.createElement("video");
+  video.preload = "metadata";
+  video.muted = true;
+  video.playsInline = true;
+  video.src = url;
+
+  const loaded = await new Promise((resolve) => {
+    const done = (value) => resolve(value);
+    video.addEventListener("loadedmetadata", () => done(true), { once: true });
+    video.addEventListener("error", () => done(false), { once: true });
+    setTimeout(() => done(false), 8000);
+  });
+
+  if (!loaded) {
+    URL.revokeObjectURL(url);
+    return { playable: false, duration: 0, posterBlob: null };
+  }
+
+  const duration = Number(video.duration) || 0;
+  let posterBlob = null;
+  try {
+    const at = Math.max(0.1, Math.min(duration * 0.1, Math.max(duration - 1, 0.1)));
+    video.currentTime = at;
+    await new Promise((resolve) => {
+      video.addEventListener("seeked", resolve, { once: true });
+      setTimeout(resolve, 2500);
+    });
+    // Give the decoder one painted frame before the canvas copy. The callback
+    // does not fire for an off-DOM, paused video in some Chromium builds, so it
+    // must race a timer. Without the timer the probe never resolves and the
+    // Upload button stays disabled forever.
+    await new Promise((resolve) => {
+      let settled = false;
+      const finish = () => { if (!settled) { settled = true; resolve(); } };
+      try {
+        if (video.requestVideoFrameCallback) video.requestVideoFrameCallback(finish);
+      } catch { /* fall through to the timer */ }
+      setTimeout(finish, 300);
+    });
+
+    const vw = video.videoWidth || 500;
+    const vh = video.videoHeight || 750;
+    const width = 500;
+    const height = Math.round(width * (vh / vw)) || 750;
+    const canvas = document.createElement("canvas");
+    canvas.width = width;
+    canvas.height = Math.min(1100, Math.max(300, height));
+    canvas.getContext("2d").drawImage(video, 0, 0, canvas.width, canvas.height);
+    posterBlob = await new Promise((resolve) => canvas.toBlob(resolve, "image/jpeg", 0.82));
+  } catch { /* a missing poster is recoverable; the title keeps its generated art */ }
+
+  URL.revokeObjectURL(url);
+  return { playable: true, duration, posterBlob };
+}
+
+async function putWithRetry(url, body, headers = {}, tries = 3) {
+  let last;
+  for (let attempt = 0; attempt < tries; attempt++) {
     try {
-      const job = await runConversion(result.file);
-      const rows = readSources();
-      for (const row of rows) if (row.file === result.file) row.file = job.output;
-      // The 480p copy made alongside the conversion is the same film, so it
-      // becomes a second quality without anyone having to find the file.
-      if (job.extra && job.extra.file && !rows.some((r) => r.file === job.extra.file)) {
-        rows.push({ ...SOURCE_TEMPLATE(), file: job.extra.file, quality: job.extra.quality, audio: rows[0] ? rows[0].audio : "", best: false });
-      }
-      renderSources(rows);
-
-      for (const f of [{ name: job.output, bytes: job.bytes }, job.extra]) {
-        if (f && f.name && !state.files.some((x) => x.name === f.name)) {
-          state.files.push({ name: f.name, bytes: f.bytes || 0, referenced: false });
-        }
-      }
-      state.files.sort((a, b) => a.name.localeCompare(b.name));
-      renderFiles();
-      hint.textContent = `Converted to ${job.output} (${bytes(job.bytes)})` +
-        (job.extra ? `, plus a ${job.extra.quality}p copy for slow connections` : "") +
-        `. ${result.file} is kept as an unused file.`;
-      toast(job.extra ? `Converted → ${job.output} + ${job.extra.quality}p` : `Converted → ${job.output}`);
-    } catch (e) {
-      hint.textContent = `${warning} ${e.message}`;
-      toast(e.message, "err");
+      const res = await fetch(url, { method: "PUT", headers, body });
+      if (res.ok) return res;
+      last = new Error(`HTTP ${res.status}`);
+      if (res.status >= 400 && res.status < 500) break; // a bad SAS will not heal
+    } catch (error) {
+      last = error;
     }
-  } catch (e) {
-    hint.textContent = e.message;
-    toast(e.message, "err");
-  } finally {
-    fileInput.value = "";
+    await new Promise((r) => setTimeout(r, 400 * 2 ** attempt));
   }
-}
-
-// ---- conversion -------------------------------------------------------------
-// A long encode happens on the server, so this only follows the job: start it,
-// poll for percent/speed/ETA, and keep the panel honest until it ends.
-let activeJob = null;
-
-async function runConversion(file, { rendition = false } = {}) {
-  const progress = $("upload-progress");
-  const hint = $("upload-hint");
-  const cancel = $("cancel-convert");
-
-  const query = `file=${encodeURIComponent(file)}${rendition ? "&rendition=1" : ""}`;
-  const started = await api(`/api/admin/convert?${query}`, { method: "POST" });
-  if (!started.ok) throw new Error(started.data.message || started.data.error || "conversion could not start");
-
-  let job = started.data.job;
-  activeJob = job.id;
-  cancel.hidden = false;
-  progress.hidden = false;
-  progress.value = 0;
-
-  try {
-    while (job.status === "running" || job.status === "queued") {
-      const percent = Math.round(Number(job.percent) || 0);
-      const speed = job.speed ? ` (${job.speed})` : "";
-      const eta = job.eta ? `, about ${Math.max(1, Math.ceil(job.eta / 60))} min left` : "";
-      progress.value = percent;
-      hint.textContent = job.phase
-        ? `Making the ${String(job.phase).replace("rendition ", "")} copy — ${percent}%${speed}${eta}`
-        : `Converting to MP4 — ${percent}%${speed}${eta}`;
-      await new Promise((r) => setTimeout(r, 1500));
-      const r = await api(`/api/admin/convert?id=${encodeURIComponent(job.id)}`);
-      if (!r.ok) throw new Error("lost track of the conversion");
-      job = r.data.job;
-    }
-  } finally {
-    activeJob = null;
-    cancel.hidden = true;
-  }
-
-  if (job.status !== "done") throw new Error(job.error || `conversion ${job.status}`);
-  progress.hidden = true;
-  progress.value = 0;
-  return job;
-}
-
-$("cancel-convert").addEventListener("click", async () => {
-  if (!activeJob) return;
-  const r = await api(`/api/admin/convert?id=${encodeURIComponent(activeJob)}`, { method: "DELETE" });
-  if (!r.ok) toast(r.data.message || "Could not cancel the conversion", "err");
-});
-
-// A file that already plays can still be given the small copy the player steps
-// down to. One click, the same job runner, the same progress bar.
-$("files").addEventListener("click", async (e) => {
-  const btn = e.target.closest("[data-rendition]");
-  if (!btn || btn.disabled) return;
-  btn.disabled = true;
-  try {
-    const job = await runConversion(btn.dataset.rendition, { rendition: true });
-    const rows = readSources();
-    if (job.extra && job.extra.file && !rows.some((r) => r.file === job.extra.file)) {
-      rows.push({ ...SOURCE_TEMPLATE(), file: job.extra.file, quality: job.extra.quality, audio: rows[0] ? rows[0].audio : "", best: false });
-      renderSources(rows);
-    }
-    if (job.extra && job.extra.file && !state.files.some((f) => f.name === job.extra.file)) {
-      state.files.push({ name: job.extra.file, bytes: job.extra.bytes || 0, referenced: true });
-      state.files.sort((a, b) => a.name.localeCompare(b.name));
-    }
-    renderFiles();
-    $("upload-hint").textContent = `Made ${job.output}. Save the title to publish it as a second quality.`;
-    toast(`Made ${job.output}`);
-  } catch (err) {
-    toast(err.message, "err");
-  } finally {
-    btn.disabled = false;
-  }
-});
-
-for (const ev of ["input", "change"]) $("f-poster").addEventListener(ev, refreshPosterPreview);
-
-// ---- publishing to Blob storage ---------------------------------------------
-const AUTO_KEY = "mlbd_auto_publish";
-
-function azureReady() {
-  const a = (state && state.azure) || {};
-  return Boolean(a.configured && a.scope === "container");
-}
-
-// The standing answer to "send this film to Azure?", remembered between visits
-// and on by default: in Azure-only mode a film left on this PC cannot play.
-(function initAutoPublish() {
-  const box = $("f-auto-azure");
-  const saved = localStorage.getItem(AUTO_KEY);
-  box.checked = saved === null ? true : saved === "1";
-  box.addEventListener("change", () => localStorage.setItem(AUTO_KEY, box.checked ? "1" : "0"));
-})();
-
-let activeTransfer = null; // only a job this page started may be cancelled here
-let transferSeq = 0;
-
-function showTransfer(title) {
-  transferSeq += 1;
-  $("transfer").hidden = false;
-  $("transfer-title").textContent = title;
-  $("transfer-progress").value = 0;
-  $("transfer-detail").textContent = "";
-}
-
-function hideTransfer() {
-  $("transfer").hidden = true;
+  throw last || new Error("upload failed");
 }
 
 /**
- * Follow one Azure job until it lands, drawing percent, speed and the time
- * left. Speed is measured here between polls, so no extra clock has to travel
- * over the wire.
+ * A resumable upload needs a stable identity for "this file". Name, size and
+ * mtime are enough to tell two pickings of the same file apart from a different
+ * film with the same name.
  */
-async function followTransfer(job, label, { owned = true } = {}) {
-  activeTransfer = owned ? job.id : null;
-  $("transfer-cancel").hidden = !owned;
+async function resumeKeyFor(file) {
+  const data = new TextEncoder().encode(`${file.name}|${file.size}|${file.lastModified}`);
+  const digest = await crypto.subtle.digest("SHA-256", data);
+  return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("").slice(0, 16);
+}
 
-  const sample = { bytes: Number(job.bytes) || 0, at: Date.now() };
-  let speed = 0;
+const RESUME_PREFIX = "fp_upload:";
 
-  while (job.status === "running") {
-    const percent = Math.round(Number(job.percent) || 0);
-    const step = job.count > 1 ? ` (${job.index + 1}/${job.count})` : "";
-    $("transfer-title").textContent = `${owned ? "Sending" : "Waiting for"} ${label} to Azure${step}`;
-    $("transfer-progress").value = percent;
+function readResume(key) {
+  try { return JSON.parse(localStorage.getItem(RESUME_PREFIX + key) || "null"); }
+  catch { return null; }
+}
 
-    const now = Date.now();
-    const seconds = (now - sample.at) / 1000;
-    const sent = Number(job.bytes) || 0;
-    if (seconds >= 1 && sent >= sample.bytes) {
-      speed = (sent - sample.bytes) / seconds;
-      sample.bytes = sent;
-      sample.at = now;
-    }
-    const left = speed > 0 ? (Number(job.total) - sent) / speed : 0;
-    const eta = left <= 0
-      ? ""
-      : left >= 60
-        ? ` · ${Math.max(1, Math.round(left / 60))} min left`
-        : ` · ${Math.ceil(left)} s left`;
-    $("transfer-detail").textContent =
-      `${job.file} — ${percent}% of ${bytes(job.total)}${speed > 0 ? ` · ${bytes(speed)}/s` : ""}${eta}`;
+function writeResume(key, value) {
+  try { localStorage.setItem(RESUME_PREFIX + key, JSON.stringify(value)); }
+  catch { /* private mode: resume degrades to a plain upload */ }
+}
 
-    await new Promise((r) => setTimeout(r, 1200));
-    const r = await api(`/api/admin/azure?id=${encodeURIComponent(job.id)}`);
-    if (!r.ok) throw new Error("lost track of the transfer");
-    job = r.data.job;
-  }
-
-  activeTransfer = null;
-  return job;
+function clearResume(key) {
+  try { localStorage.removeItem(RESUME_PREFIX + key); } catch { /* ignore */ }
 }
 
 /**
- * Send one file — or every unpublished file of one film — to Azure and follow
- * it until it lands. The local file is untouched: when a file finishes, every
- * title that uses it is pointed at the published copy in the same step, so the
- * catalogue is never ahead of the bytes.
+ * Azure block upload: 8 MB blocks, three in flight, a stable block id each, then
+ * one commit. Re-running a failed block is safe; the commit is the only step
+ * that makes the blob visible.
+ *
+ * Blocks accepted in an earlier attempt (same file, same blob path) are skipped.
+ * Their ids are deterministic, so the final list is identical whether a block
+ * arrived now or before a reload.
  */
-async function sendToAzure(query, label, btn, retried = false) {
-  if (btn) btn.disabled = true;
-  showTransfer(`Sending ${label} to Azure`);
-  const seq = transferSeq;
-  try {
-    const started = await api(`/api/admin/azure?${query}`, { method: "POST" });
+async function uploadInBlocks(file, uploadUrl, onProgress, { resumeKey, blob } = {}) {
+  const total = Math.ceil(file.size / BLOCK);
+  const ids = new Array(total);
+  const saved = resumeKey ? readResume(resumeKey) : null;
+  const done = new Set(saved && saved.blob === blob ? saved.done : []);
+  const queue = [...Array(total).keys()].filter((i) => !done.has(i));
 
-    if (!started.ok && started.data.nothing) {
-      hideTransfer();
-      toast(`${label} is already on Azure.`);
-      return;
+  let sent = 0;
+  for (const index of done) sent += Math.min(BLOCK, file.size - index * BLOCK);
+  onProgress(sent / file.size);
+
+  const worker = async () => {
+    for (;;) {
+      const index = queue.shift();
+      if (index === undefined) return;
+      const start = index * BLOCK;
+      const chunk = file.slice(start, Math.min(file.size, start + BLOCK));
+      const id = btoa(`block-${String(index).padStart(6, "0")}`);
+      ids[index] = id;
+      await putWithRetry(`${uploadUrl}&comp=block&blockid=${encodeURIComponent(id)}`, chunk, {
+        "content-type": "application/octet-stream",
+      });
+      done.add(index);
+      if (resumeKey) writeResume(resumeKey, { blob, done: [...done] });
+      sent += chunk.size;
+      onProgress(sent / file.size);
     }
-
-    // The server moves one film at a time. Let the one already in flight finish,
-    // then send this — that is the whole point of queueing instead of clicking.
-    if (!started.ok && started.data.error === "busy" && started.data.job && !retried) {
-      await followTransfer(started.data.job, started.data.job.file, { owned: false });
-      return sendToAzure(query, label, btn, true);
-    }
-
-    if (!started.ok) throw new Error(started.data.message || started.data.error || "the upload could not start");
-
-    const job = await followTransfer(started.data.job, label);
-    if (job.status !== "done") throw new Error(job.error || "the upload did not finish");
-
-    const what = job.count > 1 ? `${job.count} files (${bytes(job.total)})` : `${job.file} (${bytes(job.total)})`;
-    $("transfer-title").textContent = "Published to Azure";
-    $("transfer-detail").textContent =
-      `${what} · ${job.titles} title${job.titles === 1 ? "" : "s"} now stream from Azure`;
-    $("transfer-progress").value = 100;
-    $("transfer-cancel").hidden = true;
-    toast(`Published ${label} to Azure`);
-    await refresh();
-    setTimeout(() => { if (seq === transferSeq) hideTransfer(); }, 5000);
-  } catch (err) {
-    hideTransfer();
-    toast(err.message, "err");
-  } finally {
-    if (btn) btn.disabled = false;
-  }
-}
-
-// Films saved while another transfer is running wait their turn here, so an
-// upload never needs a second click even when the first film is still going.
-const azureQueue = [];
-let azurePumping = false;
-
-function queueAzure(id, label) {
-  if (!azureQueue.some((q) => q.id === id)) azureQueue.push({ id, label });
-  return pumpAzure();
-}
-
-async function pumpAzure() {
-  if (azurePumping || !azureQueue.length) return;
-  azurePumping = true;
-  try {
-    while (azureQueue.length) {
-      const next = azureQueue.shift();
-      await sendToAzure(`title=${encodeURIComponent(next.id)}&only=local`, next.label, null);
-    }
-  } finally {
-    azurePumping = false;
-  }
-}
-
-$("transfer-cancel").addEventListener("click", async () => {
-  if (!activeTransfer) return;
-  const id = activeTransfer;
-  $("transfer-cancel").disabled = true;
-  try {
-    const r = await api(`/api/admin/azure?id=${encodeURIComponent(id)}`, { method: "DELETE" });
-    toast(r.ok ? "Transfer cancelled." : r.data.message || "Could not cancel the transfer.", r.ok ? "ok" : "err");
-  } finally {
-    $("transfer-cancel").disabled = false;
-  }
-});
-
-$("files").addEventListener("click", async (e) => {
-  const publish = e.target.closest("[data-azure]");
-  if (publish && !publish.disabled) {
-    return sendToAzure(`file=${encodeURIComponent(publish.dataset.azure)}`, publish.dataset.azure, publish);
-  }
-
-  const local = e.target.closest("[data-azure-off]");
-  if (!local || local.disabled) return;
-  local.disabled = true;
-  try {
-    const r = await api(`/api/admin/azure?file=${encodeURIComponent(local.dataset.azureOff)}`, { method: "DELETE" });
-    if (!r.ok) throw new Error(r.data.message || "could not switch back");
-    toast(`Serving ${local.dataset.azureOff} from this PC again`);
-    await refresh();
-  } catch (err) {
-    toast(err.message, "err");
-    local.disabled = false;
-  }
-});
-
-$("titles").addEventListener("click", (e) => {
-  const film = e.target.closest("[data-azure-title]");
-  if (!film || film.disabled) return;
-  const id = film.dataset.azureTitle;
-  const t = state.titles.find((x) => x.id === id);
-  sendToAzure(`title=${encodeURIComponent(id)}`, (t && t.title) || id, film);
-});
-
-// ---- save -------------------------------------------------------------------
-$("movie-form").addEventListener("submit", async (e) => {
-  e.preventDefault();
-  const errEl = $("form-err");
-  errEl.hidden = true;
-  $("save-hint").textContent = "Saving…";
-
-  const body = {
-    key: $("f-key").value || state.key,
-    originalId: $("f-original-id").value || null,
-    id: $("f-id").value.trim(),
-    title: $("f-title").value.trim(),
-    year: $("f-year").value,
-    poster: $("f-poster").value.trim(),
-    description: $("f-description").value.trim(),
-    tags: $("f-tags").value.split(",").map((t) => t.trim()).filter(Boolean),
-    categories: draftCategories,
-    sources: readSources().filter((s) => s.file),
   };
 
-  const r = await api("/api/admin/title", { method: "POST", body });
-  $("save-hint").textContent = "";
+  await Promise.all(Array.from({ length: Math.min(WORKERS, total) }, worker));
 
-  if (!r.ok) {
-    showError(errEl, r.data.errors || r.data.message || r.data.error || "Save failed");
-    return;
-  }
+  const xml = '<?xml version="1.0" encoding="utf-8"?><BlockList>' +
+    ids.map((id) => `<Latest>${id}</Latest>`).join("") + "</BlockList>";
 
-  const warnings = Array.isArray(r.data.warnings) ? r.data.warnings : [];
-  if (warnings.length) toast(warnings[0], "err");
-  else toast(r.data.created ? `Added ${r.data.id}` : `Saved ${r.data.id}`);
-  closeEditor();
-  await refresh();
+  await putWithRetry(`${uploadUrl}&comp=blocklist`, xml, {
+    "content-type": "application/xml",
+    "x-ms-blob-content-type": file.type || "video/mp4",
+    "x-ms-blob-cache-control": "public, max-age=31536000, immutable",
+  });
 
-  // Saving a film that still has local files is the decision to publish it;
-  // asking for the same decision again on the next line is just friction.
-  const saved = state.titles.find((t) => t.id === r.data.id);
-  if ($("f-auto-azure").checked && azureReady() && saved && saved.local_files > 0) {
-    queueAzure(saved.id, saved.title);
+  if (resumeKey) clearResume(resumeKey);
+}
+
+async function uploadPoster(blob) {
+  const slot = await api("/api/admin/upload-url", {
+    method: "POST",
+    body: { kind: "poster", filename: "poster.jpg", size: blob.size },
+  });
+  await putWithRetry(slot.uploadUrl, blob, {
+    "x-ms-blob-type": "BlockBlob",
+    "x-ms-blob-content-type": "image/jpeg",
+    "x-ms-blob-cache-control": "public, max-age=31536000, immutable",
+  });
+  return slot.publicUrl;
+}
+
+/**
+ * A file a browser can play is published as-is. Anything else lands in
+ * incoming/ and joins the transcode queue; it stays a draft until the MP4
+ * exists, so a viewer never opens a title with nothing to play.
+ */
+uploadBtn.addEventListener("click", async () => {
+  if (!picked) return;
+  const targetId = $("target").value;
+  const target = targetId ? state.titles.find((t) => t.id === targetId) : null;
+  const name = $("name").value.trim();
+  if (!target && !name) { note(uploadNote, "Choose a title to add to, or name a new one.", "error"); return; }
+
+  uploadBtn.disabled = true;
+  progress.hidden = false;
+  bar.style.width = "0%";
+  const started = Date.now();
+  let lastShown = 0;
+
+  try {
+    const { file, playable, duration } = picked;
+    const posterBlob = customPoster || picked.posterBlob;
+    const quality = Number($("quality").value) || 720;
+    const best = $("best").checked;
+
+    let posterUrl = "";
+    // A new quality for an existing film keeps that film's poster unless the
+    // admin explicitly chose an image, which must win over the captured frame.
+    if (posterBlob && (customPoster || !target || !target.poster)) {
+      note(uploadNote, "Uploading the poster…");
+      posterUrl = await uploadPoster(posterBlob);
+    }
+
+    const stage = playable ? "movies" : "incoming";
+    note(uploadNote, playable ? "Uploading the video…" : "Uploading the original for conversion…");
+    const resumeKey = await resumeKeyFor(file);
+    const slot = await api("/api/admin/upload-url", {
+      method: "POST",
+      body: { kind: "video", filename: file.name, size: file.size, stage, resume_key: resumeKey },
+    });
+
+    await uploadInBlocks(file, slot.uploadUrl, (ratio) => {
+      bar.style.width = `${Math.round(ratio * 100)}%`;
+      const now = Date.now();
+      if (now - lastShown > 500) {
+        lastShown = now;
+        const mbps = (file.size * ratio) / 1024 / 1024 / Math.max(1, (now - started) / 1000);
+        note(uploadNote, `${Math.round(ratio * 100)}% · ${mbps.toFixed(1)} MB/s · ${bytes(file.size)}`);
+      }
+    }, { resumeKey, blob: slot.blob });
+    bar.style.width = "100%";
+
+    const source = {
+      id: crypto.randomUUID().replace(/-/g, "").slice(0, 12),
+      quality,
+      type: playable ? (file.type.includes("webm") ? "webm" : "mp4") : "mp4",
+      url: playable ? slot.publicUrl : "",
+      blob: slot.blob,
+      name: file.name,
+      size: file.size,
+      best,
+      status: playable ? "ready" : "pending",
+    };
+
+    const categories = [...document.querySelectorAll('input[name="cat"]:checked')].map((el) => el.value);
+
+    if (target) {
+      // Append this file to the existing title. A second "best" would label two
+      // qualities as best, so the new choice wins and the old one is cleared.
+      const sources = [
+        ...(target.sources || []).map((s) => (best ? { ...s, best: false } : s)),
+        source,
+      ];
+      const body = { sources };
+      if (posterUrl) body.poster_url = posterUrl;
+      if (playable && target.status === "draft" && $("publish").checked) body.status = "published";
+
+      await api(`/api/admin/titles/${encodeURIComponent(target.id)}`, { method: "PATCH", body });
+
+      if (!playable) {
+        note(uploadNote, "Added as a pending quality. It appears when conversion finishes.");
+        await api("/api/admin/transcode", {
+          method: "POST",
+          body: { title_id: target.id, source_id: source.id },
+        });
+      } else {
+        note(uploadNote, "Added. The quality menu now offers it.", "ok");
+      }
+    } else {
+      const created = await api("/api/admin/titles", {
+        method: "POST",
+        body: {
+          name,
+          year: $("year").value ? Number($("year").value) : null,
+          description: $("description").value,
+          poster_url: posterUrl,
+          duration: duration || null,
+          size: file.size,
+          categories,
+          sources: [source],
+        },
+      });
+
+      if (playable && $("publish").checked) {
+        await api(`/api/admin/titles/${encodeURIComponent(created.title.id)}`, {
+          method: "PATCH",
+          body: { status: "published" },
+        });
+      }
+
+      if (!playable) {
+        note(uploadNote, state.transcode
+          ? "Queued for conversion. You can publish it from the Library tab when it is ready."
+          : "Saved as a draft: this file is not browser-playable and the GitHub Actions transcoder is not configured. Upload an MP4 (H.264/AAC) to publish immediately.",
+        state.transcode ? "" : "error");
+        await api("/api/admin/transcode", {
+          method: "POST",
+          body: { title_id: created.title.id, source_id: source.id },
+        });
+      } else {
+        note(uploadNote, "Published.", "ok");
+      }
+    }
+
+    picked = null;
+    customPoster = null;
+    posterInput.value = "";
+    fileInput.value = "";
+    $("name").value = "";
+    $("year").value = "";
+    $("description").value = "";
+    $("poster-preview").removeAttribute("src");
+    $("target").value = "";
+    await loadState();
+  } catch (error) {
+    note(uploadNote, error.message, "error");
+  } finally {
+    uploadBtn.disabled = false;
+    progress.hidden = true;
+    bar.style.width = "0%";
   }
 });
 
-// ---- refresh ----------------------------------------------------------------
-async function refresh() {
-  const r = await api("/api/admin/state");
-  if (!r.ok) return;
-  state = r.data;
-  renderAll();
-  notePendingUpload();
-}
-
-/** An interrupted upload is worth mentioning before the next file is chosen. */
-function notePendingUpload() {
-  const pending = remembered();
-  const hint = $("upload-hint");
-  if (!pending || !hint || hint.textContent.trim()) return;
-  const name = String(pending.key || "").split("|")[0];
-  hint.textContent = `Unfinished upload on the server: ${name}. Choose the same file to carry on where it stopped.`;
-}
-
-$("refresh").addEventListener("click", async () => {
-  await refresh();
-  toast("Library refreshed.");
-});
-
-// ---- boot -------------------------------------------------------------------
-if (!token) {
-  lock();
-} else {
-  const r = await api("/api/admin/state").catch(() => null);
-  if (r && r.ok) {
-    state = r.data;
-    $("gate").hidden = true;
+// ---------------------------------------------------------------------------
+// Boot
+// ---------------------------------------------------------------------------
+(async () => {
+  if (!token) { lock(); return; }
+  try {
+    await loadState();
+    $("login").hidden = true;
     $("app").hidden = false;
-    renderAll();
+  } catch (error) {
+    if (String(error.message) !== "unauthorized") lock("Could not reach the admin API.");
   }
-}
+})();

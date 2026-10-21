@@ -1,22 +1,4 @@
-# Runtime state and secrets: these live next to the library, not in the repo.
-.storage-path
-storage/
-.azure.env
-.run/
-*.log
-*.part
-
-# Local toolchain. ffmpeg is a junction to a portable build on this machine.
-tools/
-
-# Where the films actually are (kept on another disk by STORAGE_DIR).
-tunnel.yml
-
-# Local analysis and engineering notes about the site this was modelled on.
-# Deliberately not published.
-analysis/
-NOTES.md
-
-# Node
 node_modules/
-dist/
+.wrangler/
+.dev.vars
+migration/seed.sql

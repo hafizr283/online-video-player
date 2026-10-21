@@ -1,130 +1,84 @@
-# Online Video Player
+# Fast Player — Cloudflare edition
 
-A movie library you host yourself. Browse rows of films, open one, and watch —
-then add more from the browser through an admin page that probes each upload,
-converts the formats browsers cannot play, and keeps a smaller copy for slow
-connections.
+The site with no PC in the loop: Cloudflare Pages serves the pages, Pages
+Functions serve the API, D1 stores the catalogue, comments and view counts, and
+Azure Blob stores the films.
 
-**Live:** <https://movies.hafizr283.me>
+**Live:** <https://next.hafizr283.me>
 
-![The catalogue](docs/screenshots/catalogue.png)
-
-## What it does
-
-| | |
-|---|---|
-| **Browse** | Category rows, a "Continue watching" shelf, a page per category, and progress bars on the cards you have started. |
-| **Watch** | Remembers the position, hold to play at 2×, keyboard shortcuts, fullscreen/PiP, and a quality menu that steps down to 480p by itself after repeated stalls. |
-| **Add** | Drag a file into `/admin`. The server identifies it (container, codec, audio), takes a poster frame from the film, and tells you plainly when a browser will not play it. |
-| **Convert** | HEVC, Matroska, AC-3 and friends are re-encoded to H.264/AAC — or remuxed untouched when only the container is the problem. A 480p rendition is made beside every conversion. |
-| **Publish** | Optionally send a film to Azure Blob storage and let viewers stream it from Microsoft's edge instead of your uplink. Saving a film with local files starts that upload on its own and shows its progress. |
-| **Count** | One anonymous view per film per browser after five seconds of playback, shown on the cards and the watch page. No accounts, no cookies, no third-party analytics. |
-| **Depend on nothing** | Zero npm dependencies. Node's standard library for the server, the encoder, and the Blob client. |
-
-![The player](docs/screenshots/player.png)
+The site runs entirely on Cloudflare and Azure: there is no local server, no
+tunnel, and no PC in the request path. `https://next.hafizr283.me` is the live
+host; [step 8](docs/SETUP.md#8-custom-domain-and-cutover) covers moving another
+hostname onto Pages.
 
 ## Quick start
 
-Requires Node 22 or newer (developed on Node 24).
+Read [`docs/SETUP.md`](docs/SETUP.md). It is the ordered checklist: D1, secrets,
+Azure CORS, deploy, migrate, optional transcoder, custom domain.
 
-```bash
-node server.mjs
-# open http://127.0.0.1:8890
+## What runs where
+
+| Piece | Runs on | Notes |
+| --- | --- | --- |
+| Pages, player, admin | Cloudflare Pages | static files in `public/` |
+| `/api/*`, `/movie/:id`, `/category/:id`, `/poster/:id.svg` | Pages Functions | `functions/` |
+| Titles, comments, views, queue | D1 | `schema.sql` |
+| Video, posters, incoming originals | Azure Blob | browser uploads with a 4-hour, single-blob SAS |
+| MKV/HEVC → MP4 | GitHub Actions (optional) | `.github/workflows/transcode.yml` |
+
+## Layout
+
+```
+functions/
+  _lib/            http, auth, Azure SAS, title/config mapping
+  api/             library, category, view, comments
+  api/admin/       state, titles, upload-url, transcode, comment
+  movie/[id].js    watch page (injects the player config)
+  category/[id].js category page
+  poster/[id].js   generated poster for a title with no frame
+public/            static site + admin + comments
+migration/         one-time library.json -> seed.sql
+tests/             unit + in-memory D1 integration tests
 ```
 
-That starts with three short demo clips so the pages have something to show.
-The real library is whatever you add under `/admin`.
+## Rules the code enforces
 
-**Admin.** Set a token before starting, then open `/admin` and paste it:
+- **Admin:** `Authorization: Bearer <token>` only, never a query string. No
+  `ADMIN_TOKENS` configured means every admin route is 404. Eight wrong tokens
+  from one address lock it for 15 minutes.
+- **Delete a title:** deletes the row **and its blobs**. Every failed delete is
+  reported; nothing is silently claimed.
+- **Publish:** refused when no source is playable, so a dead card never reaches
+  the home page.
+- **Views:** five seconds of playback, one per browser per 6 h, one per address
+  per title per 30 min, bots ignored, admin previews skipped.
+- **Comments:** one reply level, 1,000 chars, two links, 15 s between posts,
+  20/hour, honeypot. Hidden, not destroyed.
+- **Uploads:** the browser talks to Azure directly; Functions never carry video
+  bytes. 8 MB blocks, three in flight, retry per block, and a reload resumes
+  from the last accepted block. A file the browser can play publishes as-is;
+  anything else waits for the transcoder.
+- **Seeking:** every watch-page source URL carries a read-only SAS for the day.
+  Azure only sends `Accept-Ranges: bytes` for a modern API version and a browser
+  never sends one; the SAS supplies it, which is what makes the progress bar
+  seekable. It is not access control - the container is public-read.
+
+## Local checks
 
 ```powershell
-$env:ADMIN_TOKEN = "a-long-random-string"
-node server.mjs
+node --test tests/lib.test.mjs tests/api.test.mjs
 ```
 
-With no `ADMIN_TOKEN`, every admin route answers **404** — the page is not even
-advertised. The token travels in the `X-Admin-Token` header, never in a URL.
+The second file runs the real handlers against `schema.sql` in an in-memory
+SQLite database (Node's built-in `node:sqlite`).
 
-**Conversion** needs `ffmpeg` on `PATH` (or `FFMPEG_PATH` pointing at
-`ffmpeg.exe`). Without it, uploading, browsing and playback all still work; the
-admin just reports that it cannot repair an unplayable file.
+## Local development
 
-## Where the files go
-
-```
-<storage>/                 videos, library.json, posters, the admin token
-  library.json             the catalogue: plain JSON, edited by the admin
-  stats.json               anonymous view counts, rewritten in batches
-  posters/                 poster frames taken from each film
-public/                    the web root only
+```powershell
+copy .dev.vars.example .dev.vars
+npx --yes wrangler@latest d1 execute fast-player --local --file=schema.sql
+npx --yes wrangler@latest pages dev public
 ```
 
-Media is deliberately **outside** the web root. A file dropped in `public/`
-would be downloadable directly, bypassing the short-lived playback token; the
-static route also refuses `.mp4` by extension, so the mistake cannot reopen the
-hole. `/p/<slug>` streams a file only after the gate mints a token for it, and
-the response supports byte ranges so seeking works.
-
-Deleting a title deletes **catalogue entries, never files**. The bytes stay and
-the admin lists them as unused — the honest state: nothing claims them, and
-nothing destroyed them.
-
-## Configuration
-
-Every option is optional; the defaults run a local demo.
-
-| Variable | Default | Meaning |
-|---|---|---|
-| `ADMIN_TOKEN` | unset | enables `/admin`; unset means every admin route is 404 |
-| `ADMIN_LOCAL_ONLY` | unset | `1` = the admin only answers requests from this machine |
-| `UPLOAD_CHUNK_BYTES` | `33554432` | piece size for resumable uploads (1–64 MB); must stay under the edge's request limit |
-| `MAX_UPLOAD_BYTES` | `2147483648` | sanity ceiling for one upload; free disk space is the real limit |
-| `PORT` | `8890` | site port |
-| `HOST` | `127.0.0.1` | bind address |
-| `STORAGE_DIR` | `./storage` | media, manifest, posters, token |
-| `FFMPEG_PATH` | `ffmpeg` | encoder used for conversion and poster frames |
-| `TRANSCODE_ENCODER` | `libx264` | or a hardware encoder: `h264_amf`, `h264_nvenc`, `h264_qsv` |
-| `TRANSCODE_RENDITIONS` | `480` | height of the small copy, or `none` |
-| `AZURE_CONTAINER_URL` | unset | `https://<account>.blob.core.windows.net/<container>` |
-| `AZURE_SAS` | unset | a **container** SAS with Read/Add/Create/Write |
-| `AZURE_ONLY` | unset | `1` = stream only from Blob storage; an unpublished film will not play |
-| `AZURE_UPLOAD_BPS` | unset | upload ceiling in bytes/s (`600000` ≈ 4.8 Mbit/s) so publishing cannot saturate the line |
-
-Publishing to Blob storage, the gate, and the mirrors are described in
-[HOSTING.md](HOSTING.md).
-
-## How a play works
-
-```
-browser ──GET /movie/<id>──▶ server        page + obfuscated player config
-        ◀──────────────────
-browser ──GET /g───────────▶ server        short-lived ?mg= token for that source
-        ──GET /p/<slug>?mg=▶ server        H.264/AAC with Range support
-        (or ──────────────▶ Azure Blob)    when the film was published
-```
-
-The mirrors exist so a broken CDN can be simulated and the player's failover is
-tested rather than assumed: three origins serve the same media, one is wired to
-fail every request.
-
-## Tests
-
-```bash
-node selftest.mjs      # server contract: catalogue, gate, ranges, admin, conversion plans
-node test-azure.mjs    # the Blob publish path against a mock container
-node test-views.mjs    # view counting rules against a throwaway library
-node cdp-demo.mjs      # a real browser over CDP: playback, quality switch, admin flow
-```
-
-`selftest.mjs` needs the server started with `DEV_PANEL=1` and the same
-`ADMIN_TOKEN`; `test-azure.mjs` and `test-views.mjs` start their own server, need
-no Azure account and no network.
-
-## Notes
-
-- The Blob SAS is a credential. It is read from `<storage>/.azure.env`, is never
-  printed, and never reaches a browser — the container is public-read instead.
-- Uploads are capped at 2 GiB by default (`MAX_UPLOAD_BYTES`).
-- This is a personal project, not a service. It ships no media.
-
-What is next, and why it is not done yet: [docs/ROADMAP.md](docs/ROADMAP.md).
+`.dev.vars` is ignored by git. The dev server serves `public/` and runs the same
+Functions.

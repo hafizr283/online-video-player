@@ -1,0 +1,8 @@
+# Copy to .dev.vars for `wrangler pages dev`. Never commit the real values.
+ADMIN_TOKENS=dev-token
+IP_SALT=dev-salt-change-me
+AZURE_ACCOUNT=hafizrmovies283
+AZURE_CONTAINER=movies
+AZURE_KEY=
+GH_REPO=
+GH_TOKEN=

@@ -1,0 +1,18 @@
+{
+  "name": "fast-player",
+  "private": true,
+  "type": "module",
+  "description": "Fast Player on Cloudflare Pages + Functions + D1, with Azure Blob for media.",
+  "homepage": "https://next.hafizr283.me",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/hafizr283/online-video-player.git"
+  },
+  "bugs": "https://github.com/hafizr283/online-video-player/issues",
+  "scripts": {
+    "export": "node migration/export.mjs",
+    "schema": "wrangler d1 execute DB --remote --file=schema.sql",
+    "seed": "wrangler d1 execute DB --remote --file=migration/seed.sql",
+    "deploy": "wrangler pages deploy public"
+  }
+}

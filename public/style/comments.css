@@ -1,0 +1,164 @@
+/* Comments under the player. Same palette as the catalogue, no framework. */
+
+.comments {
+  max-width: 900px;
+  margin: 36px auto 64px;
+  padding: 0 20px;
+}
+
+.comments__head {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  margin-bottom: 14px;
+}
+
+.comments__head h2 {
+  margin: 0;
+  font-size: 19px;
+  letter-spacing: .2px;
+}
+
+.comments__count {
+  color: var(--muted, #9a9aad);
+  font-size: 13px;
+}
+
+.comments__form {
+  display: grid;
+  gap: 9px;
+  padding: 14px;
+  background: var(--bg-soft, #14141c);
+  border: 1px solid var(--line, #262633);
+  border-radius: 12px;
+}
+
+.comments__form input,
+.comments__form textarea {
+  width: 100%;
+  padding: 10px 12px;
+  color: var(--text, #ececf1);
+  background: #0e0e14;
+  border: 1px solid var(--line, #262633);
+  border-radius: 9px;
+  font: inherit;
+  resize: vertical;
+}
+
+.comments__form input:focus,
+.comments__form textarea:focus {
+  outline: 2px solid rgba(255, 45, 85, .45);
+  outline-offset: 1px;
+  border-color: transparent;
+}
+
+/* The honeypot is reachable by a script and by nothing a person sees. */
+.comments__trap {
+  position: absolute !important;
+  left: -9999px !important;
+  width: 1px !important;
+  height: 1px !important;
+  opacity: 0 !important;
+  pointer-events: none !important;
+}
+
+.comments__actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.comments__hint {
+  flex: 1;
+  color: var(--muted, #9a9aad);
+  font-size: 12.5px;
+}
+
+.comments__hint.is-error { color: #ff6b81; }
+.comments__hint.is-ok { color: #59d18c; }
+
+.comments__list {
+  display: grid;
+  gap: 12px;
+  margin-top: 18px;
+}
+
+.comments__empty {
+  color: var(--muted, #9a9aad);
+  font-size: 14px;
+}
+
+.comment {
+  padding: 12px 14px;
+  background: var(--bg-soft, #14141c);
+  border: 1px solid var(--line, #262633);
+  border-radius: 12px;
+}
+
+.comment__head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+
+.comment__name {
+  font-weight: 650;
+  font-size: 14px;
+}
+
+.comment__at {
+  color: var(--muted, #9a9aad);
+  font-size: 12px;
+}
+
+.comment__text {
+  margin: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-size: 14.5px;
+}
+
+.comment__reply {
+  margin-top: 8px;
+  padding: 0;
+  color: var(--muted, #9a9aad);
+  background: none;
+  border: 0;
+  font: inherit;
+  font-size: 12.5px;
+  cursor: pointer;
+}
+
+.comment__reply:hover { color: var(--text, #ececf1); }
+
+.comment__replies {
+  display: grid;
+  gap: 8px;
+  margin: 10px 0 0 18px;
+  padding-left: 12px;
+  border-left: 2px solid var(--line, #262633);
+}
+
+.comment--reply {
+  background: #111119;
+}
+
+.comments__more {
+  display: block;
+  margin: 16px auto 0;
+  padding: 9px 18px;
+  color: var(--text, #ececf1);
+  background: var(--bg-soft, #14141c);
+  border: 1px solid var(--line, #262633);
+  border-radius: 999px;
+  font: inherit;
+  cursor: pointer;
+}
+
+.comments__more:hover { border-color: #3a3a4c; }
+
+@media (max-width: 560px) {
+  .comments { padding: 0 14px; }
+  .comments__actions { flex-wrap: wrap; }
+}

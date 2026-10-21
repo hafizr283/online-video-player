@@ -1,0 +1,25 @@
+# Fast Player on Cloudflare Pages + Pages Functions + D1
+#
+# The static front-end is public/. The API and the watch page are Functions in
+# functions/. Video bytes never pass through Cloudflare: the browser uploads to
+# Azure Blob with a short-lived SAS and viewers stream from Blob directly.
+
+name = "fast-player"
+compatibility_date = "2025-01-01"
+pages_build_output_dir = "public"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "fast-player"
+database_id = "0a009dc7-73c4-4759-8bc9-e00781472944"
+
+[vars]
+AZURE_ACCOUNT = "hafizrmovies283"
+AZURE_CONTAINER = "movies"
+
+# Secrets (set these with `npx wrangler pages secret put <NAME>`; never commit):
+#   ADMIN_TOKENS   comma-separated admin tokens
+#   IP_SALT        long random string used to hash visitor addresses
+#   AZURE_KEY      storage account key (base64), used only to sign SAS URLs
+#   GH_REPO        owner/repo that runs .github/workflows/transcode.yml
+#   GH_TOKEN       fine-grained PAT with Contents: read/write on that repo

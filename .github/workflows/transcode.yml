@@ -1,0 +1,121 @@
+name: transcode
+
+# Pulls one queued job from the Pages API, converts it with ffmpeg, uploads the
+# MP4 to Blob storage and reports the result. Nothing runs between jobs.
+#
+# Required repository settings:
+#   variable  FP_API            https://next.hafizr283.me  (your Pages host)
+#   secret    FP_ADMIN_TOKEN    one of the ADMIN_TOKENS values
+#
+# The five-minute schedule is the safety net; repository_dispatch only removes
+# the wait. A missed dispatch is picked up on the next sweep.
+
+on:
+  repository_dispatch:
+    types: [transcode]
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: transcode
+  cancel-in-progress: false
+
+jobs:
+  convert:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Claim one job
+        id: claim
+        env:
+          API: ${{ vars.FP_API }}
+          TOKEN: ${{ secrets.FP_ADMIN_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -z "${API:-}" ] || [ -z "${TOKEN:-}" ]; then
+            echo "FP_API variable or FP_ADMIN_TOKEN secret is missing" >&2
+            exit 1
+          fi
+          curl -fsS --retry 3 -H "Authorization: Bearer $TOKEN" \
+            "$API/api/admin/transcode?next=1" -o job.json
+          echo "empty=$(jq -r '.empty // false' job.json)" >> "$GITHUB_OUTPUT"
+          echo "id=$(jq -r '.job.id // ""' job.json)" >> "$GITHUB_OUTPUT"
+          echo "name=$(jq -r '.job.name // ""' job.json)" >> "$GITHUB_OUTPUT"
+          jq -r '.job | "claimed \(.id) \(.name) \(.quality)p"' job.json || true
+
+      - name: Fetch, convert, upload
+        if: steps.claim.outputs.empty != 'true'
+        env:
+          API: ${{ vars.FP_API }}
+          TOKEN: ${{ secrets.FP_ADMIN_TOKEN }}
+          JOB_ID: ${{ steps.claim.outputs.id }}
+        run: |
+          set -euo pipefail
+          INPUT_URL=$(jq -r '.inputUrl' job.json)
+          OUTPUT_URL=$(jq -r '.outputUrl' job.json)
+
+          REMOTE_SIZE=$(curl -fsSI "$INPUT_URL" | tr -d '\r' | awk 'tolower($1)=="content-length:" {print $2}' | tail -n1)
+          if [ -n "${REMOTE_SIZE:-}" ] && [ "$REMOTE_SIZE" -gt 5800000000 ]; then
+            echo "Input is larger than the runner's free disk allows beside its output." >&2
+            exit 2
+          fi
+
+          # The Ubuntu image normally ships ffmpeg; install it only if this one does not.
+          command -v ffmpeg >/dev/null 2>&1 || { sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg; }
+
+          curl -fsSL --retry 3 --retry-delay 2 -o input.bin "$INPUT_URL"
+          SIZE=$(stat -c%s input.bin)
+          echo "downloaded $SIZE bytes"
+          if [ "$SIZE" -gt 5800000000 ]; then
+            echo "Input is larger than the 14 GB runner can hold beside its output." >&2
+            exit 2
+          fi
+
+          VCODEC=$(ffprobe -v error -select_streams v:0 -show_entries stream=codec_name -of csv=p=0 input.bin | head -n1)
+          PIXFMT=$(ffprobe -v error -select_streams v:0 -show_entries stream=pix_fmt -of csv=p=0 input.bin | head -n1)
+          ACODEC=$(ffprobe -v error -select_streams a:0 -show_entries stream=codec_name -of csv=p=0 input.bin | head -n1 || true)
+          DURATION=$(ffprobe -v error -show_entries format=duration -of csv=p=0 input.bin | head -n1)
+          echo "video=$VCODEC pix_fmt=$PIXFMT audio=${ACODEC:-none} duration=$DURATION"
+
+          if [ "$VCODEC" = "h264" ] && [ "$PIXFMT" = "yuv420p" ]; then
+            VIDEO="-c:v copy"
+          else
+            VIDEO="-c:v libx264 -preset veryfast -crf 22 -pix_fmt yuv420p"
+          fi
+
+          if [ "$ACODEC" = "aac" ]; then
+            AUDIO="-c:a copy"
+          else
+            AUDIO="-c:a aac -b:a 160k -ac 2"
+          fi
+
+          ffmpeg -hide_banner -y -i input.bin -map 0:v:0 -map 0:a:0? \
+            $VIDEO $AUDIO -movflags +faststart -max_muxing_queue_size 2048 output.mp4
+
+          OUT_SIZE=$(stat -c%s output.mp4)
+          node .github/scripts/upload.mjs output.mp4 "$OUTPUT_URL"
+
+          SECONDS_DURATION=$(python3 -c "v='${DURATION:-}'; print(round(float(v)) if v not in ('', 'N/A') else 0)")
+          jq -n --arg id "$JOB_ID" --argjson d "$SECONDS_DURATION" --argjson s "$OUT_SIZE" \
+            '{id:$id, status:"done", duration:$d, size:$s}' > result.json
+          curl -fsS -X PATCH -H "Authorization: Bearer $TOKEN" -H "content-type: application/json" \
+            --data-binary @result.json "$API/api/admin/transcode"
+          echo "done"
+
+      - name: Report failure
+        if: failure() && steps.claim.outputs.id != ''
+        env:
+          API: ${{ vars.FP_API }}
+          TOKEN: ${{ secrets.FP_ADMIN_TOKEN }}
+          JOB_ID: ${{ steps.claim.outputs.id }}
+        run: |
+          set -euo pipefail
+          jq -n --arg id "$JOB_ID" '{id:$id, status:"failed", error:"workflow failed — see the Actions log"}' > failed.json
+          curl -fsS -X PATCH -H "Authorization: Bearer $TOKEN" -H "content-type: application/json" \
+            --data-binary @failed.json "$API/api/admin/transcode" || true
