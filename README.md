@@ -63,9 +63,11 @@ tests/             unit + in-memory D1 integration tests
 - **Comments:** one reply level, 1,000 chars, two links, 15 s between posts,
   20/hour, honeypot. Hidden, not destroyed.
 - **Uploads:** the browser talks to Azure directly; Functions never carry video
-  bytes. 8 MB blocks, three in flight, retry per block, and a reload resumes
-  from the last accepted block. A file the browser can play publishes as-is;
-  anything else waits for the transcoder.
+  bytes. 8 MB blocks, three in flight, retry per block. Admin uploads resume
+  from the last accepted block; public uploads always use a fresh
+  server-chosen folder, so a visitor cannot request a write SAS for a published
+  blob. A file the browser can play publishes as-is; anything else waits for
+  the transcoder.
 - **Seeking:** every watch-page source URL carries a read-only SAS for the day.
   Azure only sends `Accept-Ranges: bytes` for a modern API version and a browser
   never sends one; the SAS supplies it, which is what makes the progress bar

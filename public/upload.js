@@ -6,7 +6,7 @@
  * for an admin to review.
  */
 
-import { probeVideo, qualityForHeight, resumeKeyFor, uploadInBlocks } from "./upload-core.js?v=1";
+import { probeVideo, qualityForHeight, uploadInBlocks } from "./upload-core.js?v=1";
 
 const $ = (id) => document.getElementById(id);
 const DEFAULT_MAX = 8 * 1024 * 1024 * 1024;
@@ -179,13 +179,11 @@ $("upload-form").addEventListener("submit", async (event) => {
 
   try {
     const file = picked.file;
-    const resumeKey = await resumeKeyFor(file);
     const slot = await api("/api/upload-url", {
       kind: "video",
       filename: file.name,
       size: file.size,
       content_type: "video/mp4",
-      resume_key: resumeKey,
     });
 
     const started = Date.now();
@@ -199,7 +197,7 @@ $("upload-form").addEventListener("submit", async (event) => {
         const mbps = (file.size * ratio) / 1024 / 1024 / Math.max(1, (now - started) / 1000);
         note($("upload-note"), `${Math.round(ratio * 100)}% · ${mbps.toFixed(1)} MB/s · ${formatBytes(file.size)}`);
       }
-    }, { resumeKey, blob: slot.blob, contentType: "video/mp4" });
+    }, { blob: slot.blob, contentType: "video/mp4" });
     $("bar").style.width = "100%";
     note($("upload-note"), "Saving the draft…");
 

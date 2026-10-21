@@ -473,7 +473,8 @@ test("admin opens public MP4 uploads; a ticket creates only a draft", async () =
   assert.equal(signed.status, 200);
   const slot = await signed.json();
   assert.match(slot.ticket, /^[0-9a-f]{32}$/);
-  assert.equal(slot.blob, "v1/abcdef1234567890/Public-Film.mp4");
+  assert.match(slot.blob, /^v1\/[0-9a-f]{12}\/Public-Film\.mp4$/);
+  assert.doesNotMatch(slot.blob, /abcdef1234567890/);
   const slotUrl = new URL(slot.uploadUrl);
   assert.equal(slotUrl.searchParams.get("sp"), "cw");
   assert.ok(slotUrl.searchParams.get("sig"));
@@ -481,7 +482,7 @@ test("admin opens public MP4 uploads; a ticket creates only a draft", async () =
   const realFetch = globalThis.fetch;
   globalThis.fetch = async (url, init) => {
     assert.equal(init?.method, "HEAD");
-    assert.match(String(url), /\/v1\/abcdef1234567890\/Public-Film\.mp4$/);
+    assert.equal(String(url).endsWith(`/${slot.blob}`), true);
     return new Response(null, {
       status: 200,
       headers: { "content-type": "video/mp4", "content-length": "4321" },
@@ -516,7 +517,7 @@ test("admin opens public MP4 uploads; a ticket creates only a draft", async () =
   assert.equal(created.sources[0].quality, 1080);
   assert.equal(created.sources[0].size, 4321);
   assert.equal(created.sources[0].status, "ready");
-  assert.match(created.sources[0].url, /^https:\/\/acct\.blob\.core\.windows\.net\/movies\/v1\/abcdef1234567890\/Public-Film\.mp4$/);
+  assert.equal(created.sources[0].url, `https://acct.blob.core.windows.net/movies/${slot.blob}`);
 
   const reused = await publicUploads.onRequestPost({
     env,

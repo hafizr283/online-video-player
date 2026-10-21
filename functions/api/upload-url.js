@@ -50,9 +50,9 @@ export async function onRequestPost({ request, env }) {
   ).bind(hash, now - 60 * 60 * 1000).first();
   if (Number(hourCount?.n) >= PUBLIC_UPLOAD_HOUR_LIMIT) return fail(429, "too_many_uploads");
 
-  const resume = String(body.resume_key || "").toLowerCase();
-  const folder = /^[a-f0-9]{12,64}$/.test(resume) ? resume : randomHex(6);
-  const blob = `v1/${folder}/${name}`;
+  // Never accept a client-chosen folder: a visitor could otherwise ask for a
+  // write SAS for a published blob whose path they saw in a player request.
+  const blob = `v1/${randomHex(6)}/${name}`;
   const uploadUrl = await blobSas(env, { blob, permissions: "cw", minutes: 240 });
   const ticket = randomHex(16);
 
