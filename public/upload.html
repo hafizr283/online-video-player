@@ -30,7 +30,10 @@
   <section id="closed" class="card" hidden>
     <h2>Public uploads are closed</h2>
     <p id="closed-note" class="note">An admin has not opened uploads right now. You can still browse the library.</p>
-    <p><a class="site-bar__link" href="/">Back to the library</a></p>
+    <div class="row-actions">
+      <a class="site-bar__link" href="/">Back to the library</a>
+      <button id="recheck" class="btn" type="button">Check again</button>
+    </div>
   </section>
 
   <section id="panel" hidden>
@@ -75,6 +78,6 @@
 
 </main>
 
-<script type="module" src="/upload.js?v=2"></script>
+<script type="module" src="/upload.js?v=3"></script>
 </body>
 </html>

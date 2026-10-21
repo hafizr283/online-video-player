@@ -1,5 +1,11 @@
 /* Admin skin. Same palette as the catalogue; no framework, no build step. */
 
+/* catalogue.css gives .card display:flex, which would otherwise beat the
+   browser's [hidden] rule and leave closed/done cards on the upload page. */
+[hidden] {
+  display: none !important;
+}
+
 body.admin {
   min-height: 100vh;
 }

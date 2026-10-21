@@ -57,11 +57,13 @@ async function api(path, body) {
   return data;
 }
 
+const CLOSED_TEXT = "An admin has not opened uploads right now. You can still browse the library.";
+
 function showClosed(message = "") {
   $("closed").hidden = false;
   $("panel").hidden = true;
   $("done").hidden = true;
-  if (message) $("closed-note").textContent = message;
+  $("closed-note").textContent = message || CLOSED_TEXT;
 }
 
 function showPanel() {
@@ -246,7 +248,7 @@ $("another").addEventListener("click", () => {
   $("file").focus();
 });
 
-(async () => {
+async function loadConfig() {
   try {
     const res = await fetch("/api/upload-config", { cache: "no-store" });
     const data = await res.json().catch(() => ({}));
@@ -260,6 +262,20 @@ $("another").addEventListener("click", () => {
     }
     showPanel();
   } catch {
-    showClosed("Could not check upload availability. Reload the page to try again.");
+    showClosed("Could not check upload availability. Try again in a moment.");
   }
-})();
+}
+
+$("recheck").addEventListener("click", async () => {
+  const button = $("recheck");
+  button.disabled = true;
+  $("closed-note").textContent = "Checking…";
+  await loadConfig();
+  button.disabled = false;
+});
+
+window.addEventListener("focus", () => {
+  if (!$("closed").hidden && !busy) loadConfig();
+});
+
+loadConfig();
